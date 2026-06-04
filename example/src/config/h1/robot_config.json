@@ -1,0 +1,16 @@
+{
+  "robot0": {
+    "ip": "192.168.1.10",
+    "num_joints": 7,
+    "gripper_enabled": true,
+    "gripper_out_addr": 6,
+    "gripper_in_addr": 7
+  },
+  "robot1": {
+    "ip": "192.168.1.9",
+    "num_joints": 7,
+    "gripper_enabled": true,
+    "gripper_out_addr": 6,
+    "gripper_in_addr": 7
+  }
+}

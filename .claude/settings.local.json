@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git -C ~/topstar_ros2 init)",
+      "Bash(git -C ~/topstar_ros2 add -A)",
+      "Bash(git -C ~/topstar_ros2 status --short)"
+    ]
+  }
+}

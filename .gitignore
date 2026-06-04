@@ -1,0 +1,10 @@
+cyclonedds_ws/build/
+cyclonedds_ws/install/
+cyclonedds_ws/log/
+example/build/
+example/install/
+example/log/
+__pycache__/
+*.pyc
+*.pyo
+.DS_Store

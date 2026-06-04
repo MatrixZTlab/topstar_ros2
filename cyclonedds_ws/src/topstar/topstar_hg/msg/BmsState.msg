@@ -1,0 +1,10 @@
+uint8 soc
+uint8[3] status
+int32 current
+uint32 pack_voltage
+uint32 remain_cap
+uint32 full_cap
+uint16 cycle
+int16[2] temperature
+uint16[16] cell_vol
+uint32[2] reserve

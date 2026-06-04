@@ -1,0 +1,14 @@
+HandMotorState[6] motor_state
+PressSensorState press_sensor
+float32[12] normal_force
+float32[12] tangential_force
+float32[12] proximity
+float32 power_v
+float32 power_a
+uint32[2] error
+uint32[2] reserve
+uint8 hand_id
+uint8 dof_count
+uint8 operational
+uint8 homed
+uint32 crc
