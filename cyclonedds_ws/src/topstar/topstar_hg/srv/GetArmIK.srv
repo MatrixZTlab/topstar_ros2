@@ -1,0 +1,10 @@
+string arm              # "right" or "left"
+float64[16] transform   # desired EE pose in arm-base frame (Robot_*_Hand_base_Link), row-major 4x4
+string method           # "placo" (default/preferred), "iiwa_ik"
+float64[7] seed_joints  # initial joints in H1 hw convention (rad)
+bool use_seed
+---
+bool success
+float64[7] joint_angles # result in H1 hw convention (rad), indices 4-10
+float64 error_norm
+string message

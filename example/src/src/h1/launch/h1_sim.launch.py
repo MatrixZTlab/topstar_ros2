@@ -26,6 +26,54 @@ from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
 
+def _placo_env() -> dict:
+    """Discover cmeel lib/site-packages dirs needed for placo and return env overrides.
+
+    placo (and its pinocchio/eigenpy dependencies) are installed via pip into
+    cmeel.prefix subtrees inside Python's site-packages.  The exact location
+    depends on whether the install was system-wide (sudo pip) or per-user
+    (pip --user).  We probe the known candidate roots in preference order —
+    newest / most-specific first — and collect every cmeel.prefix that actually
+    exists on disk.
+
+    Both PYTHONPATH and LD_LIBRARY_PATH must point at the *same* cmeel tree so
+    that the placo.so and its native shared libraries are ABI-compatible.
+    Mixing trees (e.g. new placo.so with old boost libs) causes a SIGFPE on
+    import.
+    """
+    import sys
+
+    minor = sys.version_info.minor
+    # Candidate site-packages roots, newest/most-specific first.
+    sp_roots = [
+        f"/usr/local/lib/python3.{minor}/dist-packages",
+        os.path.expanduser(f"~/.local/lib/python3.{minor}/site-packages"),
+        os.path.expanduser(
+            f"~/miniforge3/envs/topstar-mujoco/lib/python3.{minor}/site-packages"
+        ),
+    ]
+
+    lib_dirs: list[str] = []
+    py_dirs:  list[str] = []
+    for sp in sp_roots:
+        cmeel = os.path.join(sp, "cmeel.prefix")
+        lib = os.path.join(cmeel, "lib")
+        pys = os.path.join(lib, f"python3.{minor}", "site-packages")
+        if os.path.isdir(lib):
+            lib_dirs.append(lib)
+        if os.path.isdir(pys):
+            py_dirs.append(pys)
+
+    if not lib_dirs:
+        return {}
+
+    existing_ld = os.environ.get("LD_LIBRARY_PATH", "")
+    existing_py = os.environ.get("PYTHONPATH", "")
+    ld = ":".join(lib_dirs + ([existing_ld] if existing_ld else []))
+    py = ":".join(py_dirs + ([existing_py] if existing_py else []))
+    return {"LD_LIBRARY_PATH": ld, "PYTHONPATH": py}
+
+
 def generate_launch_description() -> LaunchDescription:
     sim_path_default = os.path.expanduser(
         "~/topstar_mujoco/simulate_python"
@@ -82,6 +130,7 @@ def generate_launch_description() -> LaunchDescription:
                 "TOPSTAR_SIM_PATH": LaunchConfiguration("sim_path"),
                 "TOPSTAR_H1_BACKEND": LaunchConfiguration("backend"),
                 "TOPSTAR_H1_ROBOT_CFG_FILE": LaunchConfiguration("config_file"),
+                **_placo_env(),
             },
             condition=IfCondition(LaunchConfiguration("viewer")),
         ),
@@ -97,6 +146,7 @@ def generate_launch_description() -> LaunchDescription:
                 "TOPSTAR_SIM_PATH": LaunchConfiguration("sim_path"),
                 "TOPSTAR_H1_BACKEND": LaunchConfiguration("backend"),
                 "TOPSTAR_H1_ROBOT_CFG_FILE": LaunchConfiguration("config_file"),
+                **_placo_env(),
             },
             parameters=[{
                 "state_hz": LaunchConfiguration("state_hz"),

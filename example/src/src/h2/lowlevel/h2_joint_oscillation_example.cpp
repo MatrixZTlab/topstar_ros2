@@ -4,7 +4,9 @@
  */
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
+#include <ctime>
 #include <iomanip>
 #include <sstream>
 #include <string_view>
@@ -277,6 +279,16 @@ class H2JointOscillationSender : public rclcpp::Node {
 
   void ensureManualMode() {
     while (rclcpp::ok() && !stop_manual_thread_ && !manual_mode_ready_) {
+      // If already in Manual mode (e.g. from a previous run killed with Ctrl+C),
+      // the sport service rejects SetFsmId(9) with a non-zero error. Check first.
+      int current_fsm = -1;
+      if (loco_client_.GetFsmId(current_fsm) == 0 && current_fsm == 9) {
+        manual_mode_ready_ = true;
+        RCLCPP_INFO(this->get_logger(),
+                    "Robot already in FSM_MANUAL (fsm_id=9)");
+        return;
+      }
+
       const int32_t ret = loco_client_.Manual();
       if (ret == 0) {
         manual_mode_ready_ = true;
@@ -413,6 +425,66 @@ class H2JointOscillationSender : public rclcpp::Node {
   }
 
   void LowStateHandler(topstar_hg::msg::LowState::SharedPtr message) {
+    // ── Latency / drop detection ─────────────────────────────────────────────
+    {
+      const auto now = std::chrono::steady_clock::now();
+
+      // 1. Inter-callback gap (no clock sync needed — detects subscriber stalls)
+      if (last_lowstate_time_.time_since_epoch().count() != 0) {
+        const long gap_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            now - last_lowstate_time_).count();
+        // RCLCPP_WARN(this->get_logger(),
+        //             "[LATENCY] lowstate gap %ld ms since last callback", gap_ms);    
+        if (gap_ms > 50) {
+          RCLCPP_WARN(this->get_logger(),
+                      "[LATENCY] lowstate gap %ld ms since last callback", gap_ms);
+        }
+      }
+      last_lowstate_time_ = now;
+
+      // 2. Sequence number drop detection (distinguishes drop from delay)
+      const uint32_t seq = message->reserve[3];
+      if (lowstate_seq_initialized_) {
+        const uint32_t expected = last_lowstate_seq_ + 1;
+        if (seq != expected) {
+          RCLCPP_WARN(this->get_logger(),
+                      "[LATENCY] lowstate seq jump: expected %u got %u (%u dropped)",
+                      expected, seq, seq - expected);
+        }
+      }
+      last_lowstate_seq_ = seq;
+      lowstate_seq_initialized_ = true;
+
+      // 3. Wall-clock e2e deviation — no NTP needed. First message captures the
+      //    static clock skew between machines as a baseline; later messages report
+      //    deviation from that baseline, which reflects real latency change.
+      const uint64_t write_ns =
+          (uint64_t)message->reserve[1] | ((uint64_t)message->reserve[2] << 32);
+      if (write_ns != 0) {
+        struct timespec ts_now;
+        clock_gettime(CLOCK_REALTIME, &ts_now);
+        const uint64_t now_ns =
+            (uint64_t)ts_now.tv_sec * 1000000000ULL + (uint64_t)ts_now.tv_nsec;
+        const int64_t offset_ms =
+            (static_cast<int64_t>(now_ns) - static_cast<int64_t>(write_ns)) / 1000000;
+        if (!wall_clock_baseline_set_) {
+          wall_clock_baseline_ms_ = offset_ms;
+          wall_clock_baseline_set_ = true;
+          RCLCPP_WARN(this->get_logger(),
+                      "[LATENCY] wall-clock baseline offset %ld ms (static clock skew)",
+                      offset_ms);
+        } else {
+          const int64_t deviation_ms = offset_ms - wall_clock_baseline_ms_;
+          if (deviation_ms > 50 || deviation_ms < -50) {
+            RCLCPP_WARN(this->get_logger(),
+                        "[LATENCY] lowstate e2e deviation %ld ms from baseline",
+                        deviation_ms);
+          }
+        }
+      }
+    }
+    // ────────────────────────────────────────────────────────────────────────
+
     // ── Motor fault detection ────────────────────────────────────────────────
     // Primary: per-motor motorstate field (non-zero = fault code from EtherCAT).
     // Secondary: reserve[0] system flag packed by topstar_bridge
@@ -505,6 +577,11 @@ class H2JointOscillationSender : public rclcpp::Node {
 
   DataBuffer<MotorState> motor_state_buffer_;
   DataBuffer<MotorCommand> motor_command_buffer_;
+  std::chrono::steady_clock::time_point last_lowstate_time_{};
+  uint32_t last_lowstate_seq_{0};
+  bool lowstate_seq_initialized_{false};
+  bool wall_clock_baseline_set_{false};
+  int64_t wall_clock_baseline_ms_{0};
   topstar::robot::h2::LocoClient loco_client_;
   std::vector<JointOscillationSpec> controlled_joints_;
   std::array<StartupJointState, H2_NUM_MOTOR> startup_positions_{};

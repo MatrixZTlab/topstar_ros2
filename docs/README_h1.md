@@ -79,13 +79,32 @@ source install/setup.bash
 
 | Topic | Type | Direction | Description |
 |---|---|---|---|
-| `/h1/lowcmd` | `topstar_hg/LowCmd` | subscribed | Upper-body joint position commands (slots 0–17) |
-| `/h1/base_cmd` | `geometry_msgs/Twist` | subscribed | Base velocity (`vx`, `vy`, `omega`) |
-| `/h1/lowstate` | `topstar_hg/LowState` | published | Joint + IMU state (slots 0–17), 50 Hz default |
+| `/lowcmd` | `topstar_hg/LowCmd` | subscribed | Upper-body joint position commands (slots 0–17) |
+| `/base_cmd` | `geometry_msgs/Twist` | subscribed | Base velocity (`vx`, `vy`, `omega`) |
+| `/lowstate` | `topstar_hg/LowState` | published | Joint + IMU state (slots 0–17), 50 Hz default |
+| `/hand/right/cmd` | `topstar_hg/GripperCmd` | subscribed | Right gripper position command |
+| `/hand/left/cmd` | `topstar_hg/GripperCmd` | subscribed | Left gripper position command |
+| `/hand/right/state` | `topstar_hg/GripperState` | published | Right gripper position + effort + status |
+| `/hand/left/state` | `topstar_hg/GripperState` | published | Left gripper position + effort + status |
 | `/api/arm/request` | `topstar_api/Request` | subscribed | Arm API requests (see [Arm API](#arm-api) below) |
 | `/api/arm/response` | `topstar_api/Response` | published | Arm API responses |
 
 The state publication rate can be changed at launch: `state_hz:=100`.
+
+**`GripperCmd` fields:**
+
+| Field | Type | Description |
+|---|---|---|
+| `position` | `float32` | Target position: `0.0` = fully open, `1.0` = fully closed |
+| `mode` | `uint8` | `0` = idle, `1` = position control |
+
+**`GripperState` fields:**
+
+| Field | Type | Description |
+|---|---|---|
+| `position` | `float32` | Current position: `0.0` = open, `1.0` = closed |
+| `effort` | `float32` | Motor effort estimate |
+| `status` | `uint8` | `0` = OK, non-zero = error |
 
 ---
 
@@ -121,7 +140,7 @@ Response
 
 Move the upper body smoothly from its current pose to a target pose over `duration` seconds.  
 The response is sent immediately once the command is validated; the motion runs asynchronously.  
-While the move is in progress, regular `/h1/lowcmd` joint commands are suppressed so they cannot override the trajectory.
+While the move is in progress, regular `/lowcmd` joint commands are suppressed so they cannot override the trajectory.
 
 **Request `parameter` JSON**
 
@@ -172,11 +191,11 @@ rclpy.spin_once(node, timeout_sec=0.1)
 rclpy.shutdown()
 ```
 
-### Interaction with `/h1/lowcmd`
+### Interaction with `/lowcmd`
 
-`/h1/lowcmd` joint commands are suppressed for exactly `duration` seconds from the moment `move_joints_timed` is accepted.  
-After that window expires, `/h1/lowcmd` resumes control.  
-To hold the final pose after a timed move, ensure the next `/h1/lowcmd` you publish carries the same joint targets that were sent to `move_joints_timed`.
+`/lowcmd` joint commands are suppressed for exactly `duration` seconds from the moment `move_joints_timed` is accepted.  
+After that window expires, `/lowcmd` resumes control.  
+To hold the final pose after a timed move, ensure the next `/lowcmd` you publish carries the same joint targets that were sent to `move_joints_timed`.
 
 ---
 

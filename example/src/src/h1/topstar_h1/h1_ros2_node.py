@@ -53,10 +53,62 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 
 from geometry_msgs.msg import Twist
 from topstar_hg.msg import LowCmd, LowState, MotorCmd, MotorState, IMUState, GripperCmd, GripperState
+from topstar_hg.srv import GetArmFK, GetArmIK
 from topstar_api.msg import Request as ArmRequest, Response as ArmResponse
 
 from topstar_h1.backends import create_backend
 from topstar_h1.joint_defs import H1JointIndex, H1_NUM_JOINTS, H1_MOTOR_SLOTS
+
+# ── Arm kinematics constants ──────────────────────────────────────────────────
+
+# Single-arm URDF (iiwa-like 7-DOF) verified to match H1 arm geometry.
+# Resolved at import time from the installed package share directory.
+def _resolve_little_top_urdf() -> str:
+    try:
+        from ament_index_python.packages import get_package_share_directory
+        import os
+        return os.path.join(
+            get_package_share_directory('topstar_ros2_example'),
+            'urdf', 'h1', 'little_top.urdf',
+        )
+    except Exception:
+        return ''
+
+_LITTLE_TOP_URDF: str = _resolve_little_top_urdf()
+
+# Static transforms: Robot_Body_Rotation_Link → arm mount (Robot_*_Hand_base_Link).
+# Derived from Topstar.urdf joint origins; valid at any torso joint angle since
+# body_rot is the parent frame for both arm mounts.
+#
+# Right arm: xyz=[-0.015, 0.5643, 0.1205], rpy=[0,0,0]
+_T_BODY_TO_RIGHT_ARM: np.ndarray = np.array([
+    [1.,  0.,  0., -0.015],
+    [0.,  1.,  0.,  0.5643],
+    [0.,  0.,  1.,  0.1205],
+    [0.,  0.,  0.,  1.],
+], dtype=np.float64)
+
+# Left arm: xyz=[-0.015, 0.5643, -0.1205], rpy=[pi,0,pi]
+# Rotation Rx(pi)@Rz(pi) = [[-1,0,0],[0,1,0],[0,0,-1]]
+_T_BODY_TO_LEFT_ARM: np.ndarray = np.array([
+    [-1.,  0.,  0., -0.015],
+    [ 0.,  1.,  0.,  0.5643],
+    [ 0.,  0., -1., -0.1205],
+    [ 0.,  0.,  0.,  1.],
+], dtype=np.float64)
+
+# H1 arm joint indices in the 18-element hw array (little_top joint1..7)
+_RIGHT_ARM_IDX: list[int] = list(range(4, 11))   # shoulder_base, hand_1..6
+_LEFT_ARM_IDX:  list[int] = list(range(11, 18))  # shoulder_base, hand_1..6
+
+# placo ships its native deps (pinocchio, eigenpy) inside cmeel.prefix subtrees.
+# The launch file discovers those paths and sets LD_LIBRARY_PATH / PYTHONPATH.
+try:
+    import placo as _placo
+    _PLACO_AVAILABLE = True
+except Exception:
+    _placo = None
+    _PLACO_AVAILABLE = False
 
 # Arm API identifiers (topstar_api request/response style)
 ARM_API_ID_MOVE_JOINTS_TIMED = 1001
@@ -142,6 +194,15 @@ class H1Ros2Node(Node):
         )
         self._arm_resp_pub = self.create_publisher(ArmResponse, "/api/arm/response", _CMD_QOS)
 
+        # ── Kinematics backends (FK / IK) ─────────────────────────────────
+        self._kine_lock = threading.Lock()
+        self._iiwaik = self._load_iiwaik()
+        self._placo_model, self._placo_solver, self._placo_task = self._init_placo()
+
+        # ── FK / IK services ──────────────────────────────────────────────
+        self._fk_srv = self.create_service(GetArmFK, 'get_arm_fk', self._on_get_arm_fk)
+        self._ik_srv = self.create_service(GetArmIK, 'get_arm_ik', self._on_get_arm_ik)
+
         # ── State publish timer ───────────────────────────────────────────
         period = 1.0 / state_hz
         self._state_timer = self.create_timer(period, self._publish_lowstate)
@@ -149,6 +210,134 @@ class H1Ros2Node(Node):
         self.get_logger().info(
             f"H1Ros2Node started — publishing /lowstate at {state_hz:.0f} Hz"
         )
+
+    # ── Kinematics helpers ────────────────────────────────────────────────
+
+    def _load_iiwaik(self):
+        try:
+            from topstar_h1.vendor.topstar.dls_ik import IIWAIK
+            ik = IIWAIK()
+            self.get_logger().info("IIWAIK loaded")
+            return ik
+        except Exception as exc:
+            self.get_logger().warn(f"IIWAIK not available: {exc}")
+            return None
+
+    def _init_placo(self):
+        if not _PLACO_AVAILABLE:
+            self.get_logger().warn(
+                "placo not available — install with: sudo pip3 install placo"
+            )
+            return None, None, None
+        try:
+            model = _placo.RobotWrapper(_LITTLE_TOP_URDF, _placo.Flags.ignore_collisions)
+            solver = _placo.KinematicsSolver(model)
+            solver.mask_fbase(True)
+            task = solver.add_frame_task("end_effector", np.eye(4))
+            task.configure("end_effector", "soft", 1.0, 1.0)
+            self.get_logger().info("placo kinematics ready (little_top.urdf)")
+            return model, solver, task
+        except Exception as exc:
+            self.get_logger().warn(f"placo init failed: {exc}")
+            return None, None, None
+
+    def _fk_placo(self, q7: np.ndarray) -> np.ndarray:
+        with self._kine_lock:
+            for i in range(7):
+                self._placo_model.set_joint(f'joint{i+1}', float(q7[i]))
+            self._placo_model.update_kinematics()
+            return np.array(self._placo_model.get_T_world_frame('end_effector'))
+
+    def _ik_placo(self, T_arm: np.ndarray, seed: np.ndarray | None) -> tuple[np.ndarray, float]:
+        with self._kine_lock:
+            if seed is not None:
+                for i in range(7):
+                    self._placo_model.set_joint(f'joint{i+1}', float(seed[i]))
+                self._placo_model.update_kinematics()
+            self._placo_task.T_world_frame = T_arm
+            self._placo_solver.solve(True)
+            self._placo_model.update_kinematics()
+            q7 = np.array([self._placo_model.get_joint(f'joint{i+1}') for i in range(7)])
+            T_result = np.array(self._placo_model.get_T_world_frame('end_effector'))
+        err = float(np.linalg.norm(T_result[:3, 3] - T_arm[:3, 3]))
+        return q7, err
+
+    def _ik_iiwaik(self, T_arm: np.ndarray, seed: np.ndarray | None) -> tuple[np.ndarray, float]:
+        q7, err = self._iiwaik.inverse_kinematics(
+            T_arm, initial_angles=seed, max_iterations=100,
+        )
+        return np.asarray(q7, dtype=np.float64), float(err)
+
+    # ── FK service ────────────────────────────────────────────────────────
+
+    def _on_get_arm_fk(self, req: GetArmFK.Request, resp: GetArmFK.Response) -> GetArmFK.Response:
+        if req.arm not in ('right', 'left'):
+            resp.success = False
+            resp.message = f"arm must be 'right' or 'left', got '{req.arm}'"
+            return resp
+        try:
+            q7 = np.array(req.joint_angles, dtype=np.float64)
+            T_body_to_arm = _T_BODY_TO_RIGHT_ARM if req.arm == 'right' else _T_BODY_TO_LEFT_ARM
+
+            if self._placo_model is not None:
+                T_ee_arm = self._fk_placo(q7)
+            elif self._iiwaik is not None:
+                T_ee_arm = self._iiwaik.forward_kinematics(q7)
+            else:
+                resp.success = False
+                resp.message = "No kinematics backend available"
+                return resp
+
+            T_ee_body = T_body_to_arm @ T_ee_arm
+            resp.success = True
+            resp.transform = list(T_ee_body.flatten().astype(float))
+            resp.message = ""
+        except Exception as exc:
+            resp.success = False
+            resp.message = str(exc)
+        return resp
+
+    # ── IK service ────────────────────────────────────────────────────────
+
+    def _on_get_arm_ik(self, req: GetArmIK.Request, resp: GetArmIK.Response) -> GetArmIK.Response:
+        if req.arm not in ('right', 'left'):
+            resp.success = False
+            resp.message = f"arm must be 'right' or 'left', got '{req.arm}'"
+            return resp
+        method = req.method if req.method else 'placo'
+        if method not in ('placo', 'iiwa_ik'):
+            resp.success = False
+            resp.message = f"method must be 'placo' or 'iiwa_ik', got '{req.method}'"
+            return resp
+        try:
+            T_body_to_arm = _T_BODY_TO_RIGHT_ARM if req.arm == 'right' else _T_BODY_TO_LEFT_ARM
+            T_target_body = np.array(req.transform, dtype=np.float64).reshape(4, 4)
+            T_target_arm = np.linalg.inv(T_body_to_arm) @ T_target_body
+            seed = np.array(req.seed_joints, dtype=np.float64) if req.use_seed else None
+
+            if method == 'placo' and self._placo_model is not None:
+                q7, err = self._ik_placo(T_target_arm, seed)
+            elif method == 'iiwa_ik' and self._iiwaik is not None:
+                q7, err = self._ik_iiwaik(T_target_arm, seed)
+            elif self._placo_model is not None:
+                q7, err = self._ik_placo(T_target_arm, seed)
+                method = 'placo (fallback)'
+            elif self._iiwaik is not None:
+                q7, err = self._ik_iiwaik(T_target_arm, seed)
+                method = 'iiwa_ik (fallback)'
+            else:
+                resp.success = False
+                resp.message = "No kinematics backend available"
+                return resp
+
+            resp.success = True
+            resp.joint_angles = list(q7.astype(float))
+            resp.error_norm = err
+            resp.message = f"method={method}"
+        except Exception as exc:
+            resp.success = False
+            resp.message = str(exc)
+        return resp
 
     # ── Callbacks ─────────────────────────────────────────────────────────
 

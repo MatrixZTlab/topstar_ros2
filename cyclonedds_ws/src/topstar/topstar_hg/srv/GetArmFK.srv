@@ -1,0 +1,6 @@
+string arm              # "right" or "left"
+float64[7] joint_angles # arm joints in H1 hw convention (rad), indices 4-10
+---
+bool success
+float64[16] transform   # 4x4 row-major, EE pose in Robot_Right_Hand_base_Link frame
+string message

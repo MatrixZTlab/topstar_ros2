@@ -62,6 +62,9 @@ add_executable(h2_joint_oscillation_example
   ${TOPSTAR_LEGACY_EXAMPLE_DIR}/src/h2/lowlevel/h2_joint_oscillation_example.cpp
   ${TOPSTAR_LEGACY_EXAMPLE_DIR}/src/common/motor_crc_hg.cpp
 )
+add_executable(h2_motor_thermal_example
+  ${TOPSTAR_LEGACY_EXAMPLE_DIR}/src/h2/lowlevel/h2_motor_thermal_example.cpp
+)
 add_executable(read_low_state_hg ${TOPSTAR_LEGACY_EXAMPLE_DIR}/src/read_low_state_hg.cpp)
 
 add_executable(h2_arm_sdk_dds_example
@@ -81,6 +84,7 @@ add_executable(h2_ls_hand_example ${TOPSTAR_LEGACY_EXAMPLE_DIR}/src/h2/ls_hand/h
 target_compile_features(h2_low_level_example PRIVATE cxx_std_20)
 target_compile_features(h2_ankle_swing_example PRIVATE cxx_std_20)
 target_compile_features(h2_joint_oscillation_example PRIVATE cxx_std_20)
+target_compile_features(h2_motor_thermal_example PRIVATE cxx_std_20)
 target_compile_features(h2_arm_sdk_dds_example PRIVATE cxx_std_20)
 target_compile_features(h2_arm_action_example PRIVATE cxx_std_20)
 target_compile_features(h2_loco_client_example PRIVATE cxx_std_20)
@@ -89,6 +93,7 @@ target_compile_features(h2_ls_hand_example PRIVATE cxx_std_20)
 ament_target_dependencies(h2_low_level_example ${DEPENDENCY_LIST})
 ament_target_dependencies(h2_ankle_swing_example ${DEPENDENCY_LIST})
 ament_target_dependencies(h2_joint_oscillation_example ${DEPENDENCY_LIST})
+ament_target_dependencies(h2_motor_thermal_example ${DEPENDENCY_LIST})
 ament_target_dependencies(read_low_state_hg ${DEPENDENCY_LIST})
 ament_target_dependencies(h2_arm_sdk_dds_example ${DEPENDENCY_LIST})
 ament_target_dependencies(h2_arm_action_example ${DEPENDENCY_LIST})
@@ -99,6 +104,7 @@ install(TARGETS
   h2_low_level_example
   h2_ankle_swing_example
   h2_joint_oscillation_example
+  h2_motor_thermal_example
   read_low_state_hg
   h2_arm_sdk_dds_example
   h2_arm_action_example

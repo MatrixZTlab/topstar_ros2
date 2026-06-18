@@ -41,6 +41,8 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/HandState.msg"
   "msg/GripperCmd.msg"
   "msg/GripperState.msg"
+  "srv/GetArmFK.srv"
+  "srv/GetArmIK.srv"
   DEPENDENCIES geometry_msgs
 )
 

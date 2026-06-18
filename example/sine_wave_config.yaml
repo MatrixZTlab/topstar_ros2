@@ -1,0 +1,81 @@
+# =============================================================================
+# 正弦波电机驱动例程 —— 每个电机独立配置
+# 配合 sine_wave_example.cpp 使用。
+#
+# 用法：ros2 run <pkg> sine_wave_example --ros-args -p config_file:=/绝对路径/sine_wave_config.yaml
+#   或在 launch 里把 config_file 指到本文件。
+#
+# 运动区间：用 lower / upper 自定义【非对称】的电机弧度上下限（单位 rad）。
+#   电机在 [lower, upper] 之间按正弦往复：
+#     mid  = (upper + lower) / 2          # 区间中点
+#     half = (upper - lower) / 2          # 半幅
+#     q_des(t) = mid + half * sin(2*pi*frequency*t)
+#   起始阶段会在 ramp_sec 内从“首帧实测位置”平滑过渡到该正弦轨迹，避免突跳。
+#
+# bounds_relative 决定 lower/upper 的参考系：
+#   true  : lower/upper 是相对“首帧实测位置”的偏移（安全，推荐）。
+#           例如 lower:-0.1 upper:0.1 即在当前位置 ±0.1rad 往复。
+#   false : lower/upper 是绝对电机弧度（电机原始角，需自行确保在硬件限位内）。
+#
+# 实际执行力矩 ≈ kp*(q_des - q_now) + kd*(dq_des - dq_now)
+# =============================================================================
+
+# ---- 全局设置 ----
+global:
+  rate_hz: 500.0               # 控制下发频率 (Hz)
+  ramp_sec: 2.0               # 起始过渡时间 (s)，0=不过渡（不建议）
+  lowstate_topic: "lowstate"   # HIGH_FREQ 时为 "lowstate"，否则 "lf/lowstate"
+  bounds_relative: false        # true=lower/upper 相对首帧位置；false=绝对电机弧度
+
+# ---- 默认值：motors 列表里未显式写出的字段，回退到这里 ----
+defaults:
+  lower: 0.0               # 默认上下限相等 = 不动（安全），需要动的电机在下面单独设
+  upper: 0.0
+  frequency: 0.5
+  kp: 30.0
+  kd: 1.0
+  enable: true             # false = 该电机失能(mode=0)，不参与控制
+
+# ---- 每个电机单独配置（index 0-28，name 仅供阅读）----
+# lower/upper 可非对称，例如 lower:-0.05 upper:0.20。
+# 提示：踝电机(4,5,10,11)为并联机构，q 是原始电机角而非真实踝关节角；
+#       这里按需求直接驱动用于测试，已 enable:true，请用【更小的区间】谨慎试验。
+motors:
+  # ===== 左腿 Left Leg =====
+  - { index: 0,  name: left_hip_pitch,       lower: -0.20, upper: 0.50, frequency: 0.4, kp: 200.0, kd: 3.0, enable: true }
+  - { index: 1,  name: left_hip_roll,        lower: 0.60, upper: 1.00, frequency: 0.4, kp: 200.0, kd: 3.0, enable: true }
+  - { index: 2,  name: left_hip_yaw,         lower: -0.40, upper: 0.40, frequency: 0.4, kp: 200.0, kd: 3.0, enable: true }
+  - { index: 3,  name: left_knee,            lower: -0.00, upper: 0.80, frequency: 0.4, kp: 200.0, kd: 3.0, enable: true }
+  - { index: 4,  name: left_ankle_pitch,     lower: -0.50, upper: 0.30, frequency: 0.3, kp: 100.0, kd: 0.5, enable: true }
+  - { index: 5,  name: left_ankle_roll,      lower: 0.20, upper: -0.20, frequency: 0.3, kp: 100.0, kd: 0.5, enable: true }
+
+  # ===== 右腿 Right Leg =====
+  - { index: 6,  name: right_hip_pitch,      lower: 0.50, upper: -0.20, frequency: 0.4, kp: 200.0, kd: 3.0, enable: true }
+  - { index: 7,  name: right_hip_roll,       lower: -0.60, upper: -1.00, frequency: 0.4, kp: 200.0, kd: 3.0, enable: true }
+  - { index: 8,  name: right_hip_yaw,        lower: -0.40, upper: 0.40, frequency: 0.4, kp: 200.0, kd: 3.0, enable: true }
+  - { index: 9,  name: right_knee,           lower: 0.00, upper: 0.80, frequency: 0.4, kp: 200.0, kd: 3.0, enable: true }
+  - { index: 10, name: right_ankle_pitch,    lower: -0.50, upper: 0.30, frequency: 0.3, kp: 100.0, kd: 0.5, enable: true }
+  - { index: 11, name: right_ankle_roll,     lower: -0.20, upper: 0.20, frequency: 0.3, kp: 100.0, kd: 0.5, enable: true }
+
+  # ===== 腰 / 头 Waist / Head =====
+  - { index: 12, name: waist_yaw,            lower: 0.00, upper: 0.00, frequency: 0.3, kp: 200.0, kd: 3.0, enable: true }
+  - { index: 13, name: head_yaw,             lower: 0.00, upper: 0.00, frequency: 0.3, kp: 60.0, kd: 3.0, enable: true }
+  - { index: 14, name: head_pitch,           lower: 0.00, upper: 0.00, frequency: 0.3, kp: 60.0, kd: 3.0, enable: true }
+
+  # ===== 左臂 Left Arm =====
+  - { index: 15, name: left_shoulder_pitch,  lower: 0.00, upper: 0.00, frequency: 0.4, kp: 100.0, kd: 3.0, enable: true }
+  - { index: 16, name: left_shoulder_roll,   lower: 0.00, upper: 0.00, frequency: 0.4, kp: 100.0, kd: 3.0, enable: true }
+  - { index: 17, name: left_shoulder_yaw,    lower: 0.00, upper: 0.00, frequency: 0.4, kp: 100.0, kd: 3.0, enable: true }
+  - { index: 18, name: left_elbow,           lower: 0.00, upper: 0.00, frequency: 0.4, kp: 100.0, kd: 3.0, enable: true }
+  - { index: 19, name: left_wrist_yaw,       lower: 0.00, upper: 0.00, frequency: 0.4, kp: 100.0, kd: 3.0, enable: true }
+  - { index: 20, name: left_wrist_pitch,     lower: 0.00, upper: 0.00, frequency: 0.4, kp: 100.0, kd: 3.0, enable: true }
+  - { index: 21, name: left_wrist_roll,      lower: 0.00, upper: 0.00, frequency: 0.4, kp: 100.0, kd: 3.0, enable: true }
+
+  # ===== 右臂 Right Arm =====
+  - { index: 22, name: right_shoulder_pitch, lower: 0.00, upper: 0.00, frequency: 0.4, kp: 100.0, kd: 3.0, enable: true }
+  - { index: 23, name: right_shoulder_roll,  lower: 0.00, upper: 0.00, frequency: 0.4, kp: 100.0, kd: 3.0, enable: true }
+  - { index: 24, name: right_shoulder_yaw,   lower: 0.00, upper: 0.00, frequency: 0.4, kp: 100.0, kd: 3.0, enable: true }
+  - { index: 25, name: right_elbow,          lower: 0.00, upper: 0.00, frequency: 0.4, kp: 100.0, kd: 3.0, enable: true }
+  - { index: 26, name: right_wrist_yaw,      lower: 0.00, upper: 0.00, frequency: 0.4, kp: 100.0, kd: 3.0, enable: true }
+  - { index: 27, name: right_wrist_pitch,    lower: 0.00, upper: 0.00, frequency: 0.4, kp: 100.0, kd: 3.0, enable: true }
+  - { index: 28, name: right_wrist_roll,     lower: 0.00, upper: 0.00, frequency: 0.4, kp: 100.0, kd: 3.0, enable: true }

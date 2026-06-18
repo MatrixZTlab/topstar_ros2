@@ -7,5 +7,5 @@ if [ -f "$HOME/topstar_ros2/example/install/setup.bash" ]; then
 fi
 export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
 export CYCLONEDDS_URI='<CycloneDDS><Domain><General><Interfaces>
-                            <NetworkInterface name="enp131s0" priority="default" multicast="default" />
+                            <NetworkInterface name="wlp132s0f0" priority="default" multicast="default" />
                         </Interfaces></General></Domain></CycloneDDS>'

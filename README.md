@@ -18,11 +18,21 @@ Two robots are supported:
 topstar_ros2/
 ├── cyclonedds_ws/          # ROS2 interface packages (shared by both robots)
 │   └── src/topstar/
-│       ├── topstar_hg/     # Low-level robot message definitions
+│       ├── topstar_hg/     # Low-level robot message + service definitions
+│       │   ├── msg/        # LowCmd, LowState, GripperCmd, GripperState, …
+│       │   └── srv/        # GetArmFK, GetArmIK
 │       └── topstar_api/    # API request/response message definitions
 ├── example/
 │   ├── src/                # topstar_ros2_example (H1 Python nodes + mujoco_ros2_bridge)
+│   │   ├── src/h1/topstar_h1/
+│   │   │   └── vendor/topstar/
+│   │   │       ├── dls_ik.py       # IIWAIK — Damped Least Squares IK (7-DOF)
+│   │   │       └── topstar_kine.py # Analytic DH IK (6-DOF Topstar arm)
+│   │   └── urdf/h1/
+│   │       ├── Topstar.urdf        # Full H1 URDF
+│   │       └── little_top.urdf     # Single-arm URDF used by placo / IIWAIK
 │   ├── isaac_bridge/       # Isaac Sim ↔ ROS2 bridge scripts for H1
+│   ├── h1_fk_ik_demo.py   # FK / IK service demo and round-trip test
 │   ├── build_h1.sh         # Build H1 package only
 │   ├── h1_tune_env.sh      # H1 gain / tuning environment variables
 │   ├── h2_motor_plot.py    # H2 joint motor visualizer
@@ -32,7 +42,6 @@ topstar_ros2/
 ├── setup.sh                # Robot on Ethernet (eno1)
 ├── setup_local.sh          # Local loopback (lo) for simulation
 ├── setup_default.sh        # ROS2 + CycloneDDS, no interface override
-├── sync_to_jqr.sh          # Sync repo to remote machine (jqr@192.168.1.30)
 └── zip_redeploy.sh         # Create clean archive for redeployment
 ```
 
@@ -67,6 +76,7 @@ sudo apt install \
 | `waiting` | xapi hardware backend | `sudo pip3 install waiting` |
 | `xapi` | hardware backend | vendor wheel (see [H1 Hardware Backend](#h1-hardware-backend)) |
 | `PySide6` | upper-body jog GUI | `sudo pip3 install PySide6` |
+| `placo` | FK/IK services (preferred solver) | `sudo pip3 install placo` |
 
 > ROS2 Humble uses `/usr/bin/python3` (3.10.12). Install packages system-wide
 > with `sudo pip3 install` — no virtualenv needed.
@@ -166,13 +176,111 @@ ros2 run topstar_ros2_example h1_send_velocity
 
 | Topic | Type | Direction | Description |
 |---|---|---|---|
-| `/h1/lowcmd` | `topstar_hg/LowCmd` | subscribed | Upper-body joint position commands (18 DOF) |
-| `/h1/base_cmd` | `geometry_msgs/Twist` | subscribed | Base velocity (`vx`, `vy`, `omega`) |
-| `/h1/lowstate` | `topstar_hg/LowState` | published | Joint + IMU state (18 DOF), 50 Hz default |
+| `/lowcmd` | `topstar_hg/LowCmd` | subscribed | Upper-body joint position commands (slots 0–17) |
+| `/base_cmd` | `geometry_msgs/Twist` | subscribed | Base velocity (`vx`, `vy`, `omega`) |
+| `/lowstate` | `topstar_hg/LowState` | published | Joint + IMU state (slots 0–17), 50 Hz default |
+| `/hand/right/cmd` | `topstar_hg/GripperCmd` | subscribed | Right gripper position command |
+| `/hand/left/cmd` | `topstar_hg/GripperCmd` | subscribed | Left gripper position command |
+| `/hand/right/state` | `topstar_hg/GripperState` | published | Right gripper position + effort + status |
+| `/hand/left/state` | `topstar_hg/GripperState` | published | Left gripper position + effort + status |
 | `/api/arm/request` | `topstar_api/Request` | subscribed | Arm API requests |
 | `/api/arm/response` | `topstar_api/Response` | published | Arm API responses |
 
 State publication rate can be overridden at launch: `state_hz:=100`.
+
+### H1 ROS2 Services
+
+| Service | Type | Description |
+|---|---|---|
+| `/get_arm_fk` | `topstar_hg/GetArmFK` | Forward kinematics — joint angles → EE pose |
+| `/get_arm_ik` | `topstar_hg/GetArmIK` | Inverse kinematics — EE pose → joint angles |
+
+Both services express Cartesian poses in the **`Robot_Body_Rotation_Link` frame** (torso
+upper-body, parent of both arm mounts).  This frame is independent of TORSO_LIFT and
+TORSO_PITCH joint angles.
+
+**Reference frame geometry** (from URDF joint origins, zero torso config):
+
+| | Translation (m) | Rotation |
+|---|---|---|
+| Body → right arm mount | `[-0.015, 0.5643, +0.1205]` | identity |
+| Body → left arm mount | `[-0.015, 0.5643, −0.1205]` | `Rx(π)·Rz(π)` = `diag(−1,+1,−1)` |
+
+**`GetArmFK` request / response:**
+
+```
+string arm              # "right" or "left"
+float64[7] joint_angles # arm joints in H1 hw convention (rad), hw indices 4–10 / 11–17
+---
+bool success
+float64[16] transform   # row-major 4×4, EE pose in Robot_Body_Rotation_Link frame
+string message
+```
+
+**`GetArmIK` request / response:**
+
+```
+string arm              # "right" or "left"
+float64[16] transform   # desired EE pose in Robot_Body_Rotation_Link frame, row-major 4×4
+string method           # "placo" (default, preferred) or "iiwa_ik"
+float64[7] seed_joints  # optional initial joint guess in H1 hw convention (rad)
+bool use_seed
+---
+bool success
+float64[7] joint_angles # result in H1 hw convention (rad)
+float64 error_norm      # Euclidean position error at solution (m)
+string message
+```
+
+**Joint ordering** (both services, 7 elements):
+
+| Index in array | H1 hw slot | Joint name |
+|---|---|---|
+| 0 | 4 (right) / 11 (left) | shoulder base |
+| 1 | 5 / 12 | shoulder |
+| 2 | 6 / 13 | elbow yaw |
+| 3 | 7 / 14 | elbow |
+| 4 | 8 / 15 | wrist yaw |
+| 5 | 9 / 16 | wrist pitch |
+| 6 | 10 / 17 | wrist roll |
+
+**IK solvers:**
+
+| `method` | Backend | Notes |
+|---|---|---|
+| `"placo"` | placo optimization solver | Preferred; requires `sudo pip3 install placo` |
+| `"iiwa_ik"` | Damped Least Squares (IIWAIK) | Pure numpy, always available |
+
+If the requested method is unavailable the node falls back to whichever solver loaded
+successfully, and reports the actual method used in `response.message`.
+
+**Demo and round-trip test** (node must be running):
+
+```bash
+# Live test against the running node (placo)
+python3 ~/topstar_ros2/example/h1_fk_ik_demo.py
+
+# Live test using IIWAIK solver
+python3 ~/topstar_ros2/example/h1_fk_ik_demo.py --method iiwa_ik
+
+# Geometry-only test — no ROS2 node required
+python3 ~/topstar_ros2/example/h1_fk_ik_demo.py --dry-run
+```
+
+**`GripperCmd` fields:**
+
+| Field | Type | Description |
+|---|---|---|
+| `position` | `float32` | Target position: `0.0` = fully open, `1.0` = fully closed |
+| `mode` | `uint8` | `0` = idle, `1` = position control |
+
+**`GripperState` fields:**
+
+| Field | Type | Description |
+|---|---|---|
+| `position` | `float32` | Current position: `0.0` = open, `1.0` = closed |
+| `effort` | `float32` | Motor effort estimate |
+| `status` | `uint8` | `0` = OK, non-zero = error |
 
 ### H1 Backends
 
@@ -230,8 +338,8 @@ bash ~/topstar_ros2/example/isaac_bridge/launch_h1_bridge.sh --headless
 Isaac Sim takes 15–30 s to start; the script waits 25 s before starting the
 bridge. The bridge auto-detects the LAN interface that reaches `192.168.1.0/24`.
 
-Bridge ROS2 topics: `/h1/lowstate` (published), `/h1/lowcmd` (subscribed),
-`/h1/base_cmd` (subscribed).
+Bridge ROS2 topics: `/lowstate` (published), `/lowcmd` (subscribed),
+`/base_cmd` (subscribed).
 
 **Sync the repo to the Isaac Sim machine:**
 

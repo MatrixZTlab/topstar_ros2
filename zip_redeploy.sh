@@ -142,9 +142,6 @@ if [[ -d "$TOPSTAR_MUJOCO_DIR" ]]; then
       --exclude="*.pyc"
   done
   copy_tree "$TOPSTAR_MUJOCO_DIR" topstar_robots "$mujoco_stage_root" -a
-  materialize_h1_mesh_links \
-    "$mujoco_stage_root/topstar_robots/h1" \
-    "$SCRIPT_DIR/example/src/urdf/h1/meshes"
   included_roots+=("$(basename "$TOPSTAR_MUJOCO_DIR")")
 else
   echo "WARNING: topstar_mujoco not found at $TOPSTAR_MUJOCO_DIR; skipping MuJoCo dependency bundle." >&2
@@ -172,7 +169,7 @@ rm -f "$ZIP_NAME"
 
 (
   cd "$stage_dir"
-  zip -r "$SCRIPT_DIR/$ZIP_NAME" "${included_roots[@]}"
+  zip -ry "$SCRIPT_DIR/$ZIP_NAME" "${included_roots[@]}"
 )
 
 echo
