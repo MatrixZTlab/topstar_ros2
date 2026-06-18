@@ -10,3 +10,4 @@ __pycache__/
 .DS_Store
 topstar_ros2_redeploy_*.zip
 h2_points.json
+.claude/
