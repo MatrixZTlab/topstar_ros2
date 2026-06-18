@@ -2,7 +2,7 @@
 
 [简体中文说明](README.zh-CN.md)
 
-[H2 Example Tutorial (中文)](H2_EXAMPLES_TUTORIAL.zh-CN.md)
+[H2 Example Tutorial (中文)](docs/H2_EXAMPLES_TUTORIAL.zh-CN.md)
 
 This repository contains the ROS 2 interface packages and example nodes for
 communicating with Topstar robots through CycloneDDS.

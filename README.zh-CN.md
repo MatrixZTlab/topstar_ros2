@@ -9,7 +9,7 @@
 
 对应英文文档： [README.md](README.md)
 
-H2 示例专项教程： [H2_EXAMPLES_TUTORIAL.zh-CN.md](H2_EXAMPLES_TUTORIAL.zh-CN.md)
+H2 示例专项教程： [H2_EXAMPLES_TUTORIAL.zh-CN.md](docs/H2_EXAMPLES_TUTORIAL.zh-CN.md)
 
 ## 仓库结构
 
