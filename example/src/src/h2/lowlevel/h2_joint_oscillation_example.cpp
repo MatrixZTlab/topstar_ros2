@@ -433,8 +433,6 @@ class H2JointOscillationSender : public rclcpp::Node {
       if (last_lowstate_time_.time_since_epoch().count() != 0) {
         const long gap_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
             now - last_lowstate_time_).count();
-        // RCLCPP_WARN(this->get_logger(),
-        //             "[LATENCY] lowstate gap %ld ms since last callback", gap_ms);    
         if (gap_ms > 50) {
           RCLCPP_WARN(this->get_logger(),
                       "[LATENCY] lowstate gap %ld ms since last callback", gap_ms);
