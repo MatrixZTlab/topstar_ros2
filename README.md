@@ -126,6 +126,103 @@ Typical robot network settings:
 
 ---
 
+## Robot Network Setup
+
+> Full reference: [`docs/ROBOT_NETWORK_SETUP.md`](docs/ROBOT_NETWORK_SETUP.md)
+
+The robot runs two onboard computers connected by a dedicated wired subnet. A development
+workstation connects to the robot via a second subnet on Computer B.
+
+```
+Dev PC(s)                   Computer B                 Computer A
+192.168.36.x  ── subnet36 ──  192.168.36.10            192.168.37.10
+                               192.168.37.11  ── subnet37 ──
+                               (also on WiFi 192.168.110.x)
+```
+
+| Machine | Role | Subnet 36 IP | Subnet 37 IP | WiFi IP |
+|---|---|---|---|---|
+| Computer A | Motion control, ROS2 bridge | — | 192.168.37.10 (eno1) | 192.168.1.12 (wlp4s0) |
+| Computer B | User dev (Jetson, camera, etc.) | 192.168.36.10 (lan2) | 192.168.37.11 (lan1) | — |
+| Dev PC | Development / monitoring | 192.168.36.x | — | 192.168.1.x |
+
+Computer B acts as an IP-forwarding router between the two subnets. All machines use
+`ROS_DOMAIN_ID=2` and a shared CycloneDDS unicast peer config so DDS discovery works
+across subnets. The second robot on the same WiFi uses `ROS_DOMAIN_ID=1`.
+
+### Setting Up a New Dev PC
+
+**1. Add a static route to subnet 37 via B:**
+
+```bash
+sudo ip route add 192.168.37.0/24 via 192.168.36.10
+```
+
+**Persist it** (find your subnet-36 connection name with `nmcli connection show --active`):
+
+```bash
+sudo nmcli connection modify "<connection-name>" +ipv4.routes "192.168.37.0/24 192.168.36.10"
+sudo nmcli connection up "<connection-name>"
+```
+
+**2. Create `~/cyclone_peers.xml`** — add your machine's subnet-36 IP to the list:
+
+```xml
+<CycloneDDS>
+  <Domain>
+    <Internal>
+      <MaxMessageSize>1438B</MaxMessageSize>
+    </Internal>
+    <Discovery>
+      <Peers>
+        <Peer Address="192.168.37.10"/>   <!-- Computer A -->
+        <Peer Address="192.168.37.11"/>   <!-- Computer B (subnet-37) -->
+        <Peer Address="192.168.36.10"/>   <!-- Computer B (subnet-36) -->
+        <Peer Address="192.168.36.40"/>   <!-- existing dev PC -->
+        <Peer Address="192.168.36.XX"/>   <!-- this new machine -->
+      </Peers>
+    </Discovery>
+  </Domain>
+</CycloneDDS>
+```
+
+**3. Add to `~/.bashrc`:**
+
+```bash
+cat >> ~/.bashrc << 'EOF'
+source /opt/ros/humble/setup.bash
+export CYCLONEDDS_URI=file:///home/$USER/cyclone_peers.xml
+export ROS_DOMAIN_ID=2
+EOF
+source ~/.bashrc
+```
+
+**4. Update peer lists on A and B** — add your IP to `/etc/cyclonedds/config.xml` on A
+(sudo required, then `sudo systemctl restart topstar_bridge_v2.service`) and to
+`~/cyclone_peers.xml` on B.
+
+### Troubleshooting
+
+**"sequence size exceeds remaining buffer" on B** — MTU mismatch. B's `lan1` has MTU
+1466; ensure `<MaxMessageSize>1438B</MaxMessageSize>` is in both B's `~/cyclone_peers.xml`
+and A's `/etc/cyclonedds/config.xml`, then restart the bridge on A.
+
+**Robot topics not visible after reboot:**
+1. `ping 192.168.37.10` — if it fails, check `cat /proc/sys/net/ipv4/ip_forward` on B
+   and `ip route show` on A (route to 192.168.36.0/24 must be present).
+2. Confirm `CYCLONEDDS_URI` and `ROS_DOMAIN_ID=2` are set (`printenv | grep ROS`).
+   Note: `~/.bashrc` is not sourced in non-interactive SSH sessions.
+3. `sudo systemctl status topstar_bridge_v2.service` on A — confirm active and that
+   `ExecStart` has no `--network_interface` flag (if present, it overrides the config
+   file and restricts DDS to one interface):
+
+```bash
+sudo sed -i 's/ --network_interface=[^ ]*//' /etc/systemd/system/topstar_bridge_v2.service
+sudo systemctl daemon-reload && sudo systemctl restart topstar_bridge_v2.service
+```
+
+---
+
 ## H1 Robot
 
 ### Build
