@@ -3,66 +3,89 @@
 ## Overview
 
 The robot runs two onboard computers connected by a dedicated wired subnet. A development
-workstation connects to the robot via a second subnet on Computer B.
+workstation connects to the robot via a second subnet on Computer B, with a WireGuard VPN
+tunnel providing reliable ROS2 DDS discovery.
 
 ```
 Dev PC(s)                   Computer B                 Computer A
 192.168.36.x  ── subnet36 ──  192.168.36.10            192.168.37.10
+10.0.0.1      ══ WireGuard ══════════════════════════  10.0.0.2 / 10.0.0.3
                                192.168.37.11  ── subnet37 ──
-                               (also on WiFi 192.168.110.x)
 ```
 
-| Machine | Role | Subnet 36 IP | Subnet 37 IP | WiFi IP |
-|---|---|---|---|---|
-| Computer A | Motion control, ROS2 bridge | — | 192.168.37.10 (eno1) | 192.168.1.12 (wlp4s0) |
-| Computer B | User dev (Jetson, camera, etc.) | 192.168.36.10 (lan2) | 192.168.37.11 (lan1) | — |
-| Dev PC | Development / monitoring | 192.168.36.x | — | 192.168.1.x |
+| Machine | Role | Subnet 36 IP | Subnet 37 IP | WiFi IP | WireGuard IP |
+|---|---|---|---|---|---|
+| Computer A (Robot 1) | Motion control, ROS2 bridge | — | 192.168.37.10 (eno1) | 192.168.1.11 (wlp4s0) | 10.0.0.2 (wg0) |
+| Computer A (Robot 2) | Motion control, ROS2 bridge | — | 192.168.37.10 (eno1) | 192.168.1.12 (wlp4s0) | 10.0.0.3 (wg0) |
+| Computer B | User dev (Jetson, camera, etc.) | 192.168.36.10 (lan2) | 192.168.37.11 (lan1) | — | — |
+| Dev PC | Development / monitoring | 192.168.36.x | — | 192.168.1.x | 10.0.0.1 (wg0) |
 
-Computer B acts as a router between the two subnets (IP forwarding enabled), so dev
-PCs on subnet 36 can reach Computer A on subnet 37 and participate in the same ROS2
-network.
+Both robots share the same wired subnet IPs and are used exclusively (one at a time).
+Computer B acts as a router between the two wired subnets (IP forwarding enabled).
+
+ROS2 domain IDs separate the two robots:
+
+| Robot | `ROS_DOMAIN_ID` |
+|---|---|
+| Robot 1 | 1 |
+| Robot 2 | 2 |
 
 ---
 
 ## How It Works
 
+### WireGuard VPN (recommended)
+
+DDS multicast does not cross subnet boundaries, and cross-subnet unicast discovery is
+fragile (multi-locator conflicts, MTU mismatches, routing timing). The recommended
+approach is a WireGuard VPN tunnel that places the dev PC and Computer A on the same
+virtual subnet (10.0.0.0/24).
+
+- Dev PC sends SPDP unicast to Computer A's WireGuard IP (10.0.0.2 or 10.0.0.3)
+- Both peers are on the same /24 — no routing through B needed for DDS traffic
+- The tunnel is encrypted UDP, carried over the physical wired path (port 51820)
+- `wg-quick@wg0` is enabled as a systemd service on Computer A — survives reboots
+
+Both robots share the same wired IP (192.168.37.10) but have different WireGuard IPs.
+All dev PCs share the same WireGuard IP (10.0.0.1) since only one connects at a time.
+
+### WiFi (fallback)
+
+Computer A's `wlp4s0` and the dev PC's WiFi interface are on the same 192.168.1.x
+subnet. Multicast discovery works directly. The WiFi setup scripts (`setup_r1.sh`,
+`setup.sh`) use this path.
+
 ### IP Routing
 
-B forwards packets between the two subnets. Each machine has a static route pointing
-to B as the gateway for the other subnet:
+B forwards packets between the two wired subnets. Each machine has a static route
+pointing to B as the gateway for the other subnet:
 
 - **Dev PC → A**: route `192.168.37.0/24 via 192.168.36.10`
 - **A → Dev PC**: route `192.168.36.0/24 via 192.168.37.11`
 
-B itself requires no added routes — it has direct connections to both subnets.
-
-### ROS2 / DDS Discovery
-
-ROS2's default DDS (CycloneDDS) uses UDP multicast for node discovery, which does not
-cross subnets. All machines are configured with a CycloneDDS XML config that:
-
-- Lists explicit unicast peers for cross-subnet discovery
-- Restricts DDS to the relevant wired interfaces (avoids WiFi, cellular, USB bridge)
-- Sets `MaxMessageSize=1438B` to stay within B's `lan1` MTU of 1466
-
-A common `ROS_DOMAIN_ID=2` ties all machines into one logical ROS2 network. The second
-robot on the same WiFi uses `ROS_DOMAIN_ID=1` to avoid cross-robot topic pollution.
+This routing is required for WireGuard handshake packets (port 51820 UDP) to reach
+Computer A. Plain IP routing works reliably; only DDS discovery (UDP multicast/unicast
+with specific locator negotiation) is unreliable cross-subnet.
 
 ### ROS2 Bridge on Computer A
 
 The robot's DDS bridge (`topstar_bridge_v2`) runs as a systemd service. Its DDS
-interface selection is controlled entirely by `/etc/cyclonedds/config.xml` (the
-`--network_interface` flag must be absent — if present, it overrides the config file
-and restricts DDS to a single interface). The config binds DDS to both `eno1` (wired,
-reachable from B and dev PCs via routing) and `wlp4s0` (WiFi, reachable from dev PCs
-on the same WiFi).
+interface selection is controlled entirely by `/etc/cyclonedds/config.xml`. The config
+binds DDS to `eno1` (wired), `wlp4s0` (WiFi), and `wg0` (WireGuard) so that dev PCs
+can connect via any of these paths.
+
+> **Important:** The `--network_interface` flag must be absent from the bridge service's
+> `ExecStart` line. If a robot software update restores it, remove it:
+> ```bash
+> sudo sed -i 's/ --network_interface=[^ ]*//' /etc/systemd/system/topstar_bridge_v2.service
+> sudo systemctl daemon-reload && sudo systemctl restart topstar_bridge_v2.service
+> ```
 
 ### MTU Constraint
 
-B's `lan1` interface (subnet 37) has a non-standard MTU of **1466** bytes. Without
-mitigation, DDS packets from A (MTU 1500) cause "sequence size exceeds remaining
-buffer" parse errors on B. The `MaxMessageSize=1438B` setting (1466 − 20 IP − 8 UDP)
-prevents this by keeping all RTPS messages within the path MTU.
+B's `lan1` interface (subnet 37) has a non-standard MTU of **1466** bytes. The
+`MaxMessageSize=1438B` setting (1466 − 20 IP − 8 UDP) keeps RTPS messages within the
+path MTU. The WireGuard interface (`wg0`) uses `MaxMessageSize=1386B` (WireGuard MTU).
 
 ---
 
@@ -92,7 +115,8 @@ regenerates NetworkManager connection files on reboot and wipes `nmcli` changes:
 
 ### Computer A — CycloneDDS Config
 
-`/etc/cyclonedds/config.xml` (referenced by `CYCLONEDDS_URI` in `~/.bashrc`):
+`/etc/cyclonedds/config.xml` (referenced by `CYCLONEDDS_URI=file:///etc/cyclonedds/config.xml`
+in the bridge service environment):
 
 ```xml
 <CycloneDDS>
@@ -101,252 +125,179 @@ regenerates NetworkManager connection files on reboot and wipes `nmcli` changes:
       <Interfaces>
         <NetworkInterface name="eno1"/>
         <NetworkInterface name="wlp4s0"/>
+        <NetworkInterface name="wg0"/>
       </Interfaces>
-    </General>
-    <Internal>
       <MaxMessageSize>1438B</MaxMessageSize>
-    </Internal>
+    </General>
     <Discovery>
       <Peers>
         <Peer Address="192.168.37.10"/>
         <Peer Address="192.168.37.11"/>
         <Peer Address="192.168.36.10"/>
         <Peer Address="192.168.36.40"/>
+        <Peer Address="10.0.0.1"/>
       </Peers>
     </Discovery>
   </Domain>
 </CycloneDDS>
 ```
 
-### Computer A — Bridge Service
+Note: `MaxMessageSize` belongs in `<General>`, not `<Internal>` — newer CycloneDDS
+versions deprecated the `<Internal>` location.
 
-`/etc/systemd/system/topstar_bridge_v2.service` must **not** contain
-`--network_interface`. If a robot software update restores that flag, remove it and
-restart the service:
+### Computer A — WireGuard Config
 
-```bash
-sudo sed -i 's/ --network_interface=[^ ]*//' /etc/systemd/system/topstar_bridge_v2.service
-sudo systemctl daemon-reload && sudo systemctl restart topstar_bridge_v2.service
+`/etc/wireguard/wg0.conf` (managed by `wg-quick@wg0`, enabled at boot):
+
+```ini
+[Interface]
+Address = 10.0.0.2/24          # 10.0.0.3/24 for Robot 2
+PrivateKey = <robot_private_key>
+ListenPort = 51820
+
+[Peer]
+# Dev PC (all dev PCs share 10.0.0.1; only one connects at a time)
+PublicKey = <devpc_public_key>
+AllowedIPs = 10.0.0.1/32
+PersistentKeepalive = 25
 ```
 
-### Computer B — CycloneDDS Config
+The dev PC's public key is stored in `robots_wg.conf` in the repo. When a new dev PC
+is set up, run `register_wireguard.sh` to update the peer (see below).
 
-`~/cyclone_peers.xml`:
+### Dev PC — WireGuard Config
 
-```xml
-<CycloneDDS>
-  <Domain>
-    <General>
-      <Interfaces>
-        <NetworkInterface name="lan1"/>
-        <NetworkInterface name="lan2"/>
-      </Interfaces>
-    </General>
-    <Internal>
-      <MaxMessageSize>1438B</MaxMessageSize>
-    </Internal>
-    <Discovery>
-      <Peers>
-        <Peer Address="192.168.37.10"/>
-        <Peer Address="192.168.37.11"/>
-        <Peer Address="192.168.36.10"/>
-        <Peer Address="192.168.36.40"/>
-      </Peers>
-    </Discovery>
-  </Domain>
-</CycloneDDS>
+`/etc/wireguard/wg0.conf` (generated by `devpc_setup.sh`):
+
+```ini
+[Interface]
+Address = 10.0.0.1/24
+PrivateKey = <devpc_private_key>
+ListenPort = 51820
+
+[Peer]
+# Robot 1 Computer A
+PublicKey = xIHu3bWA+kLKelWWmYnIn3ArY8Eg5N2k9yGRsIp0R1I=
+Endpoint = 192.168.37.10:51820
+AllowedIPs = 10.0.0.2/32
+PersistentKeepalive = 25
+
+[Peer]
+# Robot 2 Computer A
+PublicKey = 01d+Yq8RYZ/ReOWMkWBQDIsUs2z29qt8gg2hmF1liHY=
+Endpoint = 192.168.37.10:51820
+AllowedIPs = 10.0.0.3/32
+PersistentKeepalive = 25
 ```
+
+Robot public keys are also stored in `robots_wg.conf` for reference.
 
 ### Computer B — setup.sh
 
-`~/topstar_ros2/setup.sh` on B must export `ROS_DOMAIN_ID=2` and kill any stale
-ros2 daemons that may have started with a different rmw implementation:
+`~/topstar_ros2/setup.sh` on B must set the correct domain and stop any stale daemon:
 
 ```bash
-#!/bin/bash
-echo "Setup topstar ros2 environment"
-source /opt/ros/humble/setup.bash
-source $HOME/topstar_ros2/cyclonedds_ws/install/setup.bash
-if [ -f "$HOME/topstar_ros2/example/install/setup.bash" ]; then
-    source $HOME/topstar_ros2/example/install/setup.bash
-fi
 export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
 export ROS_DOMAIN_ID=2
-export CYCLONEDDS_URI='<CycloneDDS><Domain><General><Interfaces><NetworkInterface name="lan1" priority="default" multicast="default" /></Interfaces></General></Domain></CycloneDDS>'
-# Kill stale daemons that may have started with wrong rmw/domain
-pkill -f 'ros2-daemon.*rmw-implementation rmw_fastrtps' 2>/dev/null || true
+export CYCLONEDDS_URI='<CycloneDDS><Domain><General><Interfaces><NetworkInterface name="lan1" priority="default" multicast="default"/></Interfaces></General></Domain></CycloneDDS>'
+ros2 daemon stop 2>/dev/null || true
 ```
-
-Without `ROS_DOMAIN_ID=2`, Python/rclpy scripts on B run on domain 0 and cannot see
-the bridge (domain 2). Without the `pkill` line, a stale Fast-DDS daemon started
-earlier in the session will compete for the SPDP multicast port and disrupt discovery.
-See the Troubleshooting section for details.
 
 ---
 
 ## Setting Up a New Dev PC
 
-Follow these steps on any new computer that connects to subnet 36 via Computer B.
-
-### 1. Verify connectivity to B
-
-```bash
-ping 192.168.36.10
-```
-
-You should have a static IP on subnet 36 (e.g. `192.168.36.41`). If DHCP is in use,
-note your assigned IP — you will need it in steps 4 and 6.
-
-### 2. Add a static route to subnet 37
+Connect the dev PC to subnet 36 (wired, via Computer B) and assign a static IP
+(e.g. `192.168.36.41`). Then run the automated setup script:
 
 ```bash
-# Apply immediately
-sudo ip route add 192.168.37.0/24 via 192.168.36.10
-
-# Verify
-ping 192.168.37.10   # should reach Computer A
+git clone <repo_url> ~/topstar_ros2
+cd ~/topstar_ros2
+bash devpc_setup.sh
 ```
 
-### 3. Make the route persistent (NetworkManager)
+`devpc_setup.sh` does the following automatically:
+1. Detects the subnet-36 wired interface and optional WiFi interface
+2. Adds the static route `192.168.37.0/24 via 192.168.36.10` and persists it via nmcli
+3. Generates WiFi setup scripts (`setup.sh`, `setup_r1.sh`) with the detected interface names
+4. Installs WireGuard, generates a keypair, writes `/etc/wireguard/wg0.conf` with both
+   robots as peers (using public keys from `robots_wg.conf`), and starts `wg-quick@wg0`
+5. Registers this dev PC's public key on the currently connected robot
 
-Find the connection name for your subnet-36 interface:
+### Registering with the second robot
+
+Since both robots share the same wired IP, `devpc_setup.sh` can only register with one
+robot per run. Switch to the other robot's network and run:
 
 ```bash
-nmcli -t -f NAME,DEVICE,STATE connection show --active
+bash ~/topstar_ros2/register_wireguard.sh
 ```
 
-Then persist the route (replace `<connection-name>` with the name from above):
+This replaces the old dev PC peer on that robot with the new public key.
+
+### Using the setup scripts
+
+After `devpc_setup.sh` completes, source the appropriate script in each shell session:
 
 ```bash
-sudo nmcli connection modify "<connection-name>" +ipv4.routes "192.168.37.0/24 192.168.36.10"
-sudo nmcli connection up "<connection-name>"
+source ~/topstar_ros2/setup_wg_r1.sh    # Robot 1 via WireGuard (recommended)
+source ~/topstar_ros2/setup_wg_r2.sh    # Robot 2 via WireGuard (recommended)
+source ~/topstar_ros2/setup_r1.sh       # Robot 1 via WiFi (fallback)
+source ~/topstar_ros2/setup.sh          # Robot 2 via WiFi (fallback)
 ```
 
-### 4. Create the CycloneDDS peer config
-
-Create `~/cyclone_peers.xml` with your machine's subnet-36 IP added to the peer list.
-Include `MaxMessageSize` to handle B's MTU 1466 constraint on lan1:
-
-```xml
-<CycloneDDS>
-  <Domain>
-    <Internal>
-      <MaxMessageSize>1438B</MaxMessageSize>
-    </Internal>
-    <Discovery>
-      <Peers>
-        <Peer Address="192.168.37.10"/>   <!-- Computer A -->
-        <Peer Address="192.168.37.11"/>   <!-- Computer B (subnet-37) -->
-        <Peer Address="192.168.36.10"/>   <!-- Computer B (subnet-36) -->
-        <Peer Address="192.168.36.40"/>   <!-- existing dev PC -->
-        <Peer Address="192.168.36.XX"/>   <!-- this new machine -->
-      </Peers>
-    </Discovery>
-  </Domain>
-</CycloneDDS>
-```
-
-Replace `192.168.36.XX` with this machine's actual IP.
-
-### 5. Add environment variables to `~/.bashrc`
-
-```bash
-cat >> ~/.bashrc << 'EOF'
-source /opt/ros/humble/setup.bash
-export CYCLONEDDS_URI=file:///home/$USER/cyclone_peers.xml
-export ROS_DOMAIN_ID=2
-EOF
-
-source ~/.bashrc
-```
-
-> **Note:** `~/.bashrc` is only sourced in interactive shells. Scripts and SSH
-> non-interactive sessions must set `CYCLONEDDS_URI` and `ROS_DOMAIN_ID` explicitly,
-> or source the file manually.
-
-### 6. Update peer lists on existing machines
-
-CycloneDDS unicast discovery is bidirectional — existing machines must also know about
-the new peer. Add `<Peer Address="192.168.36.XX"/>` to:
-
-- `~/cyclone_peers.xml` on every other dev PC
-- `/etc/cyclonedds/config.xml` on Computer A (requires sudo), then restart the bridge:
-
-```bash
-sudo systemctl restart topstar_bridge_v2.service
-```
-
-- `~/cyclone_peers.xml` on Computer B
-
-### 7. Verify ROS2 discovery
-
-```bash
-ros2 topic list    # should include /lowstate, /bms/state, /api/* etc.
-```
-
-A quick smoke test:
-
-```bash
-# On Computer A:
-ros2 run demo_nodes_cpp talker
-
-# On new dev PC:
-ros2 topic echo /chatter --once
-```
+To persist a default, add one of the above `source` lines to `~/.bashrc`.
 
 ---
 
 ## Troubleshooting
 
-**"sequence size exceeds remaining buffer" errors on B**
-CycloneDDS MTU mismatch. Ensure `<MaxMessageSize>1438B</MaxMessageSize>` is present
-in `~/cyclone_peers.xml` on B and in `/etc/cyclonedds/config.xml` on A, then restart
-the bridge service on A.
+**`!rclpy.ok()` error from `ros2 topic list`**
+A stale `ros2 daemon` is running with the wrong environment (wrong domain, wrong rmw,
+or started before the setup script was sourced). The setup scripts call `ros2 daemon stop`
+to handle this, but if the error persists, run manually:
+```bash
+ros2 daemon stop && sleep 1 && ros2 topic list
+```
+
+**WireGuard tunnel not coming up after reboot**
+Verify `wg-quick@wg0` is enabled on both ends:
+```bash
+# Dev PC
+sudo systemctl enable wg-quick@wg0
+
+# Computer A (via SSH)
+sshpass -p '123456' ssh test@192.168.37.10 'systemctl is-enabled wg-quick@wg0'
+```
+
+**WireGuard connected (ping 10.0.0.2 works) but `ros2 topic list` only shows local topics**
+Computer A's `/etc/cyclonedds/config.xml` may be missing `wg0` in its interface list,
+or the dev PC's public key may not be registered. Re-run `register_wireguard.sh`.
 
 **Robot topics not visible after reboot**
 Check in order:
-1. `ping 192.168.37.10` — if it fails, B's IP forwarding or the static routes are
-   down. Check `cat /proc/sys/net/ipv4/ip_forward` on B and `ip route show` on A.
-2. Ensure `CYCLONEDDS_URI` and `ROS_DOMAIN_ID=2` are set (`printenv | grep ROS`).
-3. `sudo systemctl status topstar_bridge_v2.service` on A — confirm the bridge is
-   active and has no `--network_interface` flag in its `ExecStart` line.
+1. `ping 10.0.0.2` (or `10.0.0.3`) — if it fails, WireGuard is down; check both ends with `sudo systemctl status wg-quick@wg0`
+2. `ping 192.168.37.10` — if it fails, B's IP forwarding or static routes are down
+3. `sudo systemctl status topstar_bridge_v2.service` on A — confirm the bridge is active
 
-**Wired interface works for ping but `ros2 topic list` only shows local topics**
-CycloneDDS silently drops a `CYCLONEDDS_URI` that contains newlines and falls back to
-defaults (all interfaces, multicast only). Multicast does not cross subnet boundaries,
-so the bridge on Computer A (subnet 37) is unreachable from a wired dev PC (subnet 36)
-without explicit peers. Keep `CYCLONEDDS_URI` on a single line and include
-`<Discovery><Peers>` with A's IP. See `setup_wired.sh` in the repo for the working
-compact one-liner.
+**Bridge service fails to start or exits immediately**
+Check the bridge log:
+```bash
+sshpass -p '123456' ssh test@192.168.37.10 'journalctl -u topstar_bridge_v2.service -n 30 --no-pager'
+```
 
 **Python/rclpy subscriber on B receives no data even though C++ nodes work**
-A stale `ros2-daemon` running with Fast-DDS (rmw_fastrtps_cpp) on domain 2 is likely
-competing for the SPDP multicast port (UDP 239.255.0.1:7900). Both rmw implementations
-bind that port with `SO_REUSEPORT`, so whichever daemon receives an SPDP probe
-packet first gets it — the CycloneDDS participant never sees A's discovery packets.
-
-This happens when the first `ros2 ...` command in a shell session runs before
-`RMW_IMPLEMENTATION=rmw_cyclonedds_cpp` is set (e.g. plain `ros2 topic list` without
-sourcing `setup.sh` first). The daemon that starts then persists across shells.
-
-To detect:
+A stale `ros2-daemon` running with Fast-DDS (rmw_fastrtps_cpp) is likely competing for
+the SPDP multicast port. Detect with:
 ```bash
-pgrep -a ros2-daemon    # look for entries with "rmw_fastrtps" on domain 2
+pgrep -a ros2-daemon    # look for entries with "rmw_fastrtps"
 ```
+Fix by stopping the daemon (`ros2 daemon stop`) and re-sourcing `setup.sh`.
 
-To fix without rebooting:
+**Topics visible from dev PC (WiFi) but not via WireGuard**
+Confirm Computer A's CycloneDDS config includes the `wg0` interface and `10.0.0.1` peer.
+If the config was changed, restart the bridge:
 ```bash
-pkill -f 'ros2-daemon.*rmw-implementation rmw_fastrtps'
-# Then re-run your CycloneDDS node/script — discovery completes in <1 second
+sshpass -p '123456' ssh test@192.168.37.10 \
+  "echo '123456' | sudo -S systemctl restart topstar_bridge_v2.service"
 ```
-
-B's `setup.sh` includes this `pkill` line so sourcing it is sufficient. The fix is
-already applied persistently on B.
-
-**Topics visible from dev PC (WiFi) but not from B (wired only)**
-A's bridge is likely restricted to a single interface. Check:
-```bash
-# On A:
-sudo systemctl cat topstar_bridge_v2.service | grep network_interface
-```
-If the flag is present, remove it as described in the Bridge Service section above.
