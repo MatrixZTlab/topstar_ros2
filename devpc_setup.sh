@@ -98,18 +98,6 @@ SCRIPT
     echo "  Written: $file"
 }
 
-# Wired URIs — cross-subnet discovery requires explicit unicast peers
-WIRED_PEERS='<Peer Address="192.168.37.10"/><Peer Address="192.168.37.11"/><Peer Address="192.168.36.10"/><Peer Address="192.168.36.40"/>'
-WIRED_URI_BASE="<CycloneDDS><Domain><General><Interfaces><NetworkInterface name=\"$WIRED_IF\" priority=\"default\" multicast=\"default\"/></Interfaces><MaxMessageSize>1438B</MaxMessageSize></General><Discovery><Peers>$WIRED_PEERS</Peers></Discovery></Domain></CycloneDDS>"
-
-write_setup_script "$REPO/setup_wired.sh" "Robot 2, domain 2, wired" 2 \
-    "$WIRED_URI_BASE" \
-    "Wired path ($WIRED_IF → subnet-36 → B → subnet-37 → A). Multicast doesn't cross subnets; unicast peers required."
-
-write_setup_script "$REPO/setup_wired_r1.sh" "Robot 1, domain 1, wired" 1 \
-    "$WIRED_URI_BASE" \
-    "Wired path ($WIRED_IF → subnet-36 → B → subnet-37 → A). Multicast doesn't cross subnets; unicast peers required."
-
 # WiFi URIs — same subnet as A's wlp4s0, only need A's WiFi IP as peer
 if [ -n "$WIFI_IF" ]; then
     WIFI_URI_R2="<CycloneDDS><Domain><General><Interfaces><NetworkInterface name=\"$WIFI_IF\" priority=\"default\" multicast=\"default\"/></Interfaces><MaxMessageSize>1438B</MaxMessageSize></General><Discovery><Peers><Peer Address=\"192.168.1.12\"/></Peers></Discovery></Domain></CycloneDDS>"
@@ -248,11 +236,9 @@ echo "Recommended scripts (WireGuard — most reliable):"
 echo "  source ~/topstar_ros2/setup_wg_r1.sh    # Robot 1"
 echo "  source ~/topstar_ros2/setup_wg_r2.sh    # Robot 2"
 echo ""
-echo "Fallback scripts (WiFi / wired):"
+echo "Fallback scripts (WiFi):"
 echo "  source ~/topstar_ros2/setup_r1.sh       # Robot 1, WiFi"
 echo "  source ~/topstar_ros2/setup.sh          # Robot 2, WiFi"
-echo "  source ~/topstar_ros2/setup_wired_r1.sh # Robot 1, wired"
-echo "  source ~/topstar_ros2/setup_wired.sh    # Robot 2, wired"
 echo ""
 echo "When connecting to a robot for the first time with this dev PC:"
 echo "  bash ~/topstar_ros2/register_wireguard.sh"
