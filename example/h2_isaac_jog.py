@@ -164,6 +164,13 @@ _SENSOR_QOS = QoSProfile(
     history=HistoryPolicy.KEEP_LAST,
     depth=1,
 )
+# Bridge /lowcmd subscriber uses BEST_EFFORT depth=1 — must match exactly.
+_LOWCMD_QOS = QoSProfile(
+    reliability=ReliabilityPolicy.BEST_EFFORT,
+    history=HistoryPolicy.KEEP_LAST,
+    depth=1,
+)
+# Bridge /api/sport/request subscriber uses RELIABLE depth=10 — keep RELIABLE here.
 _CMD_QOS = QoSProfile(
     reliability=ReliabilityPolicy.RELIABLE,
     history=HistoryPolicy.KEEP_LAST,
@@ -267,7 +274,7 @@ class _JogNode(Node):
     def __init__(self, bridge: RosBridge) -> None:
         super().__init__('h2_isaac_jog')
         self._bridge = bridge
-        self._pub = self.create_publisher(LowCmd, '/lowcmd', _CMD_QOS)
+        self._pub = self.create_publisher(LowCmd, '/lowcmd', _LOWCMD_QOS)
         self._sub = self.create_subscription(
             LowState, '/lowstate', self._on_state, _SENSOR_QOS)
         self._timer = self.create_timer(1.0 / self._HZ, self._publish)

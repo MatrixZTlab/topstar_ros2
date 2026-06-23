@@ -157,6 +157,31 @@ sudo systemctl daemon-reload && sudo systemctl restart topstar_bridge_v2.service
 </CycloneDDS>
 ```
 
+### Computer B — setup.sh
+
+`~/topstar_ros2/setup.sh` on B must export `ROS_DOMAIN_ID=2` and kill any stale
+ros2 daemons that may have started with a different rmw implementation:
+
+```bash
+#!/bin/bash
+echo "Setup topstar ros2 environment"
+source /opt/ros/humble/setup.bash
+source $HOME/topstar_ros2/cyclonedds_ws/install/setup.bash
+if [ -f "$HOME/topstar_ros2/example/install/setup.bash" ]; then
+    source $HOME/topstar_ros2/example/install/setup.bash
+fi
+export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+export ROS_DOMAIN_ID=2
+export CYCLONEDDS_URI='<CycloneDDS><Domain><General><Interfaces><NetworkInterface name="lan1" priority="default" multicast="default" /></Interfaces></General></Domain></CycloneDDS>'
+# Kill stale daemons that may have started with wrong rmw/domain
+pkill -f 'ros2-daemon.*rmw-implementation rmw_fastrtps' 2>/dev/null || true
+```
+
+Without `ROS_DOMAIN_ID=2`, Python/rclpy scripts on B run on domain 0 and cannot see
+the bridge (domain 2). Without the `pkill` line, a stale Fast-DDS daemon started
+earlier in the session will compete for the SPDP multicast port and disrupt discovery.
+See the Troubleshooting section for details.
+
 ---
 
 ## Setting Up a New Dev PC
@@ -285,6 +310,38 @@ Check in order:
 2. Ensure `CYCLONEDDS_URI` and `ROS_DOMAIN_ID=2` are set (`printenv | grep ROS`).
 3. `sudo systemctl status topstar_bridge_v2.service` on A — confirm the bridge is
    active and has no `--network_interface` flag in its `ExecStart` line.
+
+**Wired interface works for ping but `ros2 topic list` only shows local topics**
+CycloneDDS silently drops a `CYCLONEDDS_URI` that contains newlines and falls back to
+defaults (all interfaces, multicast only). Multicast does not cross subnet boundaries,
+so the bridge on Computer A (subnet 37) is unreachable from a wired dev PC (subnet 36)
+without explicit peers. Keep `CYCLONEDDS_URI` on a single line and include
+`<Discovery><Peers>` with A's IP. See `setup_wired.sh` in the repo for the working
+compact one-liner.
+
+**Python/rclpy subscriber on B receives no data even though C++ nodes work**
+A stale `ros2-daemon` running with Fast-DDS (rmw_fastrtps_cpp) on domain 2 is likely
+competing for the SPDP multicast port (UDP 239.255.0.1:7900). Both rmw implementations
+bind that port with `SO_REUSEPORT`, so whichever daemon receives an SPDP probe
+packet first gets it — the CycloneDDS participant never sees A's discovery packets.
+
+This happens when the first `ros2 ...` command in a shell session runs before
+`RMW_IMPLEMENTATION=rmw_cyclonedds_cpp` is set (e.g. plain `ros2 topic list` without
+sourcing `setup.sh` first). The daemon that starts then persists across shells.
+
+To detect:
+```bash
+pgrep -a ros2-daemon    # look for entries with "rmw_fastrtps" on domain 2
+```
+
+To fix without rebooting:
+```bash
+pkill -f 'ros2-daemon.*rmw-implementation rmw_fastrtps'
+# Then re-run your CycloneDDS node/script — discovery completes in <1 second
+```
+
+B's `setup.sh` includes this `pkill` line so sourcing it is sufficient. The fix is
+already applied persistently on B.
 
 **Topics visible from dev PC (WiFi) but not from B (wired only)**
 A's bridge is likely restricted to a single interface. Check:
