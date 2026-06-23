@@ -92,8 +92,8 @@ export ROS_DOMAIN_ID=$domain
 # $uri_comment
 # IMPORTANT: keep CYCLONEDDS_URI on one line — CycloneDDS fails to parse multiline env vars.
 export CYCLONEDDS_URI='$uri'
-# Kill stale daemons that may have started with wrong rmw/domain
-pkill -f 'ros2-daemon.*rmw-implementation rmw_fastrtps' 2>/dev/null || true
+# Stop any stale ros2 daemon (graceful stop cleans socket files; pkill leaves them and causes !rclpy.ok() errors)
+ros2 daemon stop 2>/dev/null || true
 SCRIPT
     chmod +x "$file"
     echo "  Written: $file"
@@ -101,7 +101,7 @@ SCRIPT
 
 # Wired URIs — cross-subnet discovery requires explicit unicast peers
 WIRED_PEERS='<Peer Address="192.168.37.10"/><Peer Address="192.168.37.11"/><Peer Address="192.168.36.10"/><Peer Address="192.168.36.40"/>'
-WIRED_URI_BASE="<CycloneDDS><Domain><General><Interfaces><NetworkInterface name=\"$WIRED_IF\" priority=\"default\" multicast=\"default\"/></Interfaces></General><Internal><MaxMessageSize>1438B</MaxMessageSize></Internal><Discovery><Peers>$WIRED_PEERS</Peers></Discovery></Domain></CycloneDDS>"
+WIRED_URI_BASE="<CycloneDDS><Domain><General><Interfaces><NetworkInterface name=\"$WIRED_IF\" priority=\"default\" multicast=\"default\"/></Interfaces><MaxMessageSize>1438B</MaxMessageSize></General><Discovery><Peers>$WIRED_PEERS</Peers></Discovery></Domain></CycloneDDS>"
 
 write_setup_script "$REPO/setup_wired.sh" "Robot 2, domain 2, wired" 2 \
     "$WIRED_URI_BASE" \
@@ -113,8 +113,8 @@ write_setup_script "$REPO/setup_wired_r1.sh" "Robot 1, domain 1, wired" 1 \
 
 # WiFi URIs — same subnet as A's wlp4s0, so multicast works; only need A's WiFi IP as peer
 if [ -n "$WIFI_IF" ]; then
-    WIFI_URI_R2="<CycloneDDS><Domain><General><Interfaces><NetworkInterface name=\"$WIFI_IF\" priority=\"default\" multicast=\"default\"/></Interfaces></General><Internal><MaxMessageSize>1438B</MaxMessageSize></Internal><Discovery><Peers><Peer Address=\"192.168.1.12\"/></Peers></Discovery></Domain></CycloneDDS>"
-    WIFI_URI_R1="<CycloneDDS><Domain><General><Interfaces><NetworkInterface name=\"$WIFI_IF\" priority=\"default\" multicast=\"default\"/></Interfaces></General><Internal><MaxMessageSize>1438B</MaxMessageSize></Internal><Discovery><Peers><Peer Address=\"192.168.1.11\"/></Peers></Discovery></Domain></CycloneDDS>"
+    WIFI_URI_R2="<CycloneDDS><Domain><General><Interfaces><NetworkInterface name=\"$WIFI_IF\" priority=\"default\" multicast=\"default\"/></Interfaces><MaxMessageSize>1438B</MaxMessageSize></General><Discovery><Peers><Peer Address=\"192.168.1.12\"/></Peers></Discovery></Domain></CycloneDDS>"
+    WIFI_URI_R1="<CycloneDDS><Domain><General><Interfaces><NetworkInterface name=\"$WIFI_IF\" priority=\"default\" multicast=\"default\"/></Interfaces><MaxMessageSize>1438B</MaxMessageSize></General><Discovery><Peers><Peer Address=\"192.168.1.11\"/></Peers></Discovery></Domain></CycloneDDS>"
 
     write_setup_script "$REPO/setup.sh" "Robot 2, domain 2, WiFi" 2 \
         "$WIFI_URI_R2" \

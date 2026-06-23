@@ -11,6 +11,6 @@ export ROS_DOMAIN_ID=2
 # Multicast does not cross the subnet-36/37 boundary, so peers are required for
 # discovering Computer A (only reachable via routing through B).
 # IMPORTANT: keep this on one line — CycloneDDS fails to parse multiline env vars.
-export CYCLONEDDS_URI='<CycloneDDS><Domain><General><Interfaces><NetworkInterface name="enp131s0" priority="default" multicast="default"/></Interfaces></General><Internal><MaxMessageSize>1438B</MaxMessageSize></Internal><Discovery><Peers><Peer Address="192.168.37.10"/><Peer Address="192.168.37.11"/><Peer Address="192.168.36.10"/><Peer Address="192.168.36.40"/></Peers></Discovery></Domain></CycloneDDS>'
-# Kill stale daemons that may have started with wrong rmw/domain
-pkill -f 'ros2-daemon.*rmw-implementation rmw_fastrtps' 2>/dev/null || true
+export CYCLONEDDS_URI='<CycloneDDS><Domain><General><Interfaces><NetworkInterface name="enp131s0" priority="default" multicast="default"/></Interfaces><MaxMessageSize>1438B</MaxMessageSize></General><Discovery><Peers><Peer Address="192.168.37.10"/><Peer Address="192.168.37.11"/><Peer Address="192.168.36.10"/><Peer Address="192.168.36.40"/></Peers></Discovery></Domain></CycloneDDS>'
+# Stop any stale ros2 daemon (graceful stop cleans socket files; pkill leaves them and causes !rclpy.ok() errors)
+ros2 daemon stop 2>/dev/null || true
