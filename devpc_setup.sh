@@ -130,10 +130,10 @@ source "$REPO/robots_wg.conf"
 
 # Get or generate dev PC private key
 if ip link show wg0 &>/dev/null 2>&1; then
-    DEV_PRIV=$(sudo wg showconf wg0 | awk '/PrivateKey/ {print $3}')
+    DEV_PRIV=$(echo '123456' | sudo -kS wg showconf wg0 2>/dev/null | awk '/PrivateKey/ {print $3}')
     echo "wg0 already running — reusing existing keypair."
 elif [ -f /etc/wireguard/wg0.conf ]; then
-    DEV_PRIV=$(sudo awk '/PrivateKey/ {print $3}' /etc/wireguard/wg0.conf)
+    DEV_PRIV=$(echo '123456' | sudo -kS awk '/PrivateKey/ {print $3}' /etc/wireguard/wg0.conf 2>/dev/null)
     echo "Reusing existing WireGuard keypair."
 else
     DEV_PRIV=$(wg genkey)

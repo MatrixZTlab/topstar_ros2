@@ -14,9 +14,9 @@ fi
 
 echo -n "Reading dev PC WireGuard public key ... "
 if ip link show wg0 &>/dev/null 2>&1; then
-    DEV_PUB=$(sudo wg show wg0 public-key)
+    DEV_PUB=$(echo '123456' | sudo -kS wg show wg0 public-key 2>/dev/null)
 elif [ -f /etc/wireguard/wg0.conf ]; then
-    DEV_PUB=$(sudo awk '/PrivateKey/ {print $3}' /etc/wireguard/wg0.conf | wg pubkey)
+    DEV_PUB=$(echo '123456' | sudo -kS awk '/PrivateKey/ {print $3}' /etc/wireguard/wg0.conf 2>/dev/null | wg pubkey)
 else
     echo "FAILED"
     echo "ERROR: WireGuard not configured. Run devpc_setup.sh first."
