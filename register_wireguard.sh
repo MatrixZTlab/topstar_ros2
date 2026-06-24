@@ -1,6 +1,7 @@
 #!/bin/bash
 # Register this dev PC's WireGuard public key on whichever robot is currently
-# connected (192.168.37.10). Run once per robot after devpc_setup.sh.
+# connected (192.168.37.10). Each dev PC gets a unique IP in 10.0.0.10+ so
+# multiple dev PCs can be registered simultaneously without replacing each other.
 set -e
 
 ROBOT_IP="192.168.37.10"
@@ -32,24 +33,51 @@ if ! ping -c 1 -W 2 "$ROBOT_IP" &>/dev/null; then
 fi
 echo "OK"
 
-echo -n "Updating WireGuard peer on robot ... "
-OLD_PUB=$(sshpass -p "$ROBOT_PASS" ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 \
+# Get all current peers from robot: lines of "<pubkey>  <allowedIP/prefix>"
+WG_PEERS=$(sshpass -p "$ROBOT_PASS" ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 \
     "${ROBOT_USER}@${ROBOT_IP}" \
-    "echo '${ROBOT_PASS}' | sudo -kS wg show wg0 allowed-ips 2>/dev/null \
-     | grep '10\.0\.0\.1/32' | awk '{print \$1}'" 2>/dev/null || true)
+    "echo '${ROBOT_PASS}' | sudo -kS wg show wg0 allowed-ips 2>/dev/null" 2>/dev/null || true)
 
-if [ -n "$OLD_PUB" ] && [ "$OLD_PUB" = "$DEV_PUB" ]; then
-    echo "already registered."
-    exit 0
-fi
+# Check if this dev PC is already registered (match by public key)
+ASSIGNED_IP=$(echo "$WG_PEERS" | grep -F "$DEV_PUB" | awk '{print $2}' | cut -d'/' -f1 || true)
 
-if [ -n "$OLD_PUB" ]; then
+if [ -n "$ASSIGNED_IP" ]; then
+    echo "Already registered as ${ASSIGNED_IP} — nothing to do."
+else
+    # Prefer the IP already in local wg0 (so the same PC gets the same IP on all robots)
+    LOCAL_IP=""
+    if ip link show wg0 &>/dev/null 2>&1; then
+        LOCAL_IP=$(ip -o addr show wg0 | awk '/10\.0\.0\./ {split($4,a,"/"); print a[1]}')
+    elif [ -f /etc/wireguard/wg0.conf ]; then
+        LOCAL_IP=$(echo '123456' | sudo -kS awk '/^Address/ {split($3,a,"/"); print a[1]}' \
+            /etc/wireguard/wg0.conf 2>/dev/null || true)
+    fi
+
+    USED_IPS=$(echo "$WG_PEERS" | awk '{print $2}' | cut -d'/' -f1 | grep '^10\.0\.0\.' || true)
+
+    # Use local IP if it's in the dev-PC range and not already taken by another key
+    if echo "$LOCAL_IP" | grep -qE '^10\.0\.0\.([1-9][0-9]|[2-9][0-9]{1,2}|1[0-9]{2}|2[0-4][0-9]|25[0-4])$' && \
+       ! echo "$USED_IPS" | grep -qF "$LOCAL_IP"; then
+        ASSIGNED_IP="$LOCAL_IP"
+    else
+        # Auto-assign next available from 10.0.0.10
+        for i in $(seq 10 254); do
+            CANDIDATE="10.0.0.$i"
+            if ! echo "$USED_IPS" | grep -qF "$CANDIDATE"; then
+                ASSIGNED_IP="$CANDIDATE"
+                break
+            fi
+        done
+    fi
+
+    [ -n "$ASSIGNED_IP" ] || { echo "ERROR: No available IPs in 10.0.0.10–254"; exit 1; }
+
+    echo -n "Registering as ${ASSIGNED_IP} ... "
     sshpass -p "$ROBOT_PASS" ssh "${ROBOT_USER}@${ROBOT_IP}" \
-        "echo '${ROBOT_PASS}' | sudo -kS wg set wg0 peer ${OLD_PUB} remove" 2>/dev/null || true
+        "echo '${ROBOT_PASS}' | sudo -kS wg set wg0 peer ${DEV_PUB} \
+         allowed-ips ${ASSIGNED_IP}/32 persistent-keepalive 25 && \
+         echo '${ROBOT_PASS}' | sudo -kS wg-quick save wg0"
+    echo "Done."
 fi
 
-sshpass -p "$ROBOT_PASS" ssh "${ROBOT_USER}@${ROBOT_IP}" \
-    "echo '${ROBOT_PASS}' | sudo -kS wg set wg0 peer ${DEV_PUB} \
-     allowed-ips 10.0.0.1/32 persistent-keepalive 25 && \
-     echo '${ROBOT_PASS}' | sudo -kS wg-quick save wg0"
-echo "Done."
+echo "WireGuard IP for this dev PC: ${ASSIGNED_IP}"

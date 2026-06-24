@@ -142,6 +142,38 @@ fi
 DEV_PUB=$(echo "$DEV_PRIV" | wg pubkey)
 echo "Dev PC public key : $DEV_PUB"
 
+# Determine this dev PC's unique WireGuard IP
+# Priority: 1. already registered on robot  2. current wg0 IP  3. auto-assign from 10.0.0.10+
+DEV_WG_IP=""
+if ping -c 1 -W 2 192.168.37.10 &>/dev/null; then
+    WG_PEERS=$(sshpass -p '123456' ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 \
+        test@192.168.37.10 \
+        "echo '123456' | sudo -kS wg show wg0 allowed-ips 2>/dev/null" 2>/dev/null || true)
+    DEV_WG_IP=$(echo "$WG_PEERS" | grep -F "$DEV_PUB" | awk '{print $2}' | cut -d'/' -f1 || true)
+fi
+if [ -z "$DEV_WG_IP" ] && ip link show wg0 &>/dev/null 2>&1; then
+    DEV_WG_IP=$(ip -o addr show wg0 | awk '/10\.0\.0\./ {split($4,a,"/"); print a[1]}')
+    # Ignore legacy shared IP 10.0.0.1
+    [ "$DEV_WG_IP" = "10.0.0.1" ] && DEV_WG_IP=""
+fi
+if [ -z "$DEV_WG_IP" ] && [ -f /etc/wireguard/wg0.conf ]; then
+    DEV_WG_IP=$(echo '123456' | sudo -kS awk '/^Address/ {split($3,a,"/"); print a[1]}' \
+        /etc/wireguard/wg0.conf 2>/dev/null || true)
+    [ "$DEV_WG_IP" = "10.0.0.1" ] && DEV_WG_IP=""
+fi
+if [ -z "$DEV_WG_IP" ]; then
+    # Auto-assign: find next available in 10.0.0.10+
+    USED_IPS=$(echo "${WG_PEERS:-}" | awk '{print $2}' | cut -d'/' -f1 | grep '^10\.0\.0\.' || true)
+    for i in $(seq 10 254); do
+        CANDIDATE="10.0.0.$i"
+        if ! echo "$USED_IPS" | grep -qF "$CANDIDATE"; then
+            DEV_WG_IP="$CANDIDATE"
+            break
+        fi
+    done
+fi
+echo "Dev PC WireGuard IP: $DEV_WG_IP"
+
 # Write /etc/wireguard/wg0.conf
 cat > /tmp/topstar_wg0.conf << EOF
 [Interface]
@@ -177,25 +209,17 @@ else
     echo "wg0 started."
 fi
 
-# Register this dev PC's key on the currently reachable robot
+# Register this dev PC on the currently reachable robot (add as new peer, don't replace others)
 echo -n "Registering dev PC with robot at 192.168.37.10 ... "
 if ping -c 1 -W 2 192.168.37.10 &>/dev/null; then
-    OLD_PUB=$(sshpass -p '123456' ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 \
-        test@192.168.37.10 \
-        "echo '123456' | sudo -kS wg show wg0 allowed-ips 2>/dev/null \
-         | grep '10\.0\.0\.1/32' | awk '{print \$1}'" 2>/dev/null || true)
-    if [ -n "$OLD_PUB" ] && [ "$OLD_PUB" != "$DEV_PUB" ]; then
-        sshpass -p '123456' ssh test@192.168.37.10 \
-            "echo '123456' | sudo -kS wg set wg0 peer ${OLD_PUB} remove" 2>/dev/null || true
-    fi
     sshpass -p '123456' ssh test@192.168.37.10 \
         "echo '123456' | sudo -kS wg set wg0 peer ${DEV_PUB} \
-         allowed-ips 10.0.0.1/32 persistent-keepalive 25 && \
+         allowed-ips ${DEV_WG_IP}/32 persistent-keepalive 25 && \
          echo '123456' | sudo -kS wg-quick save wg0" && \
-        echo "OK" || echo "FAILED"
+        echo "OK (${DEV_WG_IP})" || echo "FAILED"
 else
     echo "robot not reachable."
-    echo "  Switch to each robot's network and run: bash $REPO/register_wireguard.sh"
+    echo "  Connect to each robot's network and run: bash $REPO/register_wireguard.sh"
 fi
 
 # Generate WireGuard setup scripts

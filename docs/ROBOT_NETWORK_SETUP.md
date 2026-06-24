@@ -18,10 +18,11 @@ Dev PC(s)                   Computer B                 Computer A
 | Computer A (Robot 1) | Motion control, ROS2 bridge | — | 192.168.37.10 (eno1) | 192.168.1.11 (wlp4s0) | 10.0.0.2 (wg0) |
 | Computer A (Robot 2) | Motion control, ROS2 bridge | — | 192.168.37.10 (eno1) | 192.168.1.12 (wlp4s0) | 10.0.0.3 (wg0) |
 | Computer B | User dev (Jetson, camera, etc.) | 192.168.36.10 (lan2) | 192.168.37.11 (lan1) | — | — |
-| Dev PC | Development / monitoring | 192.168.36.x | — | 192.168.1.x | 10.0.0.1 (wg0) |
+| Dev PC | Development / monitoring | 192.168.36.x | — | 192.168.1.x | 10.0.0.10+ (wg0) |
 
 Both robots share the same wired subnet IPs and are used exclusively (one at a time).
 Computer B acts as a router between the two wired subnets (IP forwarding enabled).
+Multiple dev PCs can connect simultaneously — each is assigned a unique WireGuard IP.
 
 ROS2 domain IDs separate the two robots:
 
@@ -47,7 +48,8 @@ virtual subnet (10.0.0.0/24).
 - `wg-quick@wg0` is enabled as a systemd service on Computer A — survives reboots
 
 Both robots share the same wired IP (192.168.37.10) but have different WireGuard IPs.
-All dev PCs share the same WireGuard IP (10.0.0.1) since only one connects at a time.
+Each dev PC gets a unique IP in `10.0.0.10+`, auto-assigned by `devpc_setup.sh` or
+`register_wireguard.sh`. A dev PC keeps the same IP across both robots.
 
 ### WiFi (fallback)
 
@@ -156,14 +158,20 @@ PrivateKey = <robot_private_key>
 ListenPort = 51820
 
 [Peer]
-# Dev PC (all dev PCs share 10.0.0.1; only one connects at a time)
-PublicKey = <devpc_public_key>
-AllowedIPs = 10.0.0.1/32
+# Dev PC 1 (10.0.0.10+, unique per machine)
+PublicKey = <devpc1_public_key>
+AllowedIPs = 10.0.0.10/32
+PersistentKeepalive = 25
+
+[Peer]
+# Dev PC 2
+PublicKey = <devpc2_public_key>
+AllowedIPs = 10.0.0.11/32
 PersistentKeepalive = 25
 ```
 
-The dev PC's public key is stored in `robots_wg.conf` in the repo. When a new dev PC
-is set up, run `register_wireguard.sh` to update the peer (see below).
+Each dev PC is a separate `[Peer]` entry. `devpc_setup.sh` and `register_wireguard.sh`
+add new peers without removing existing ones.
 
 ### Dev PC — WireGuard Config
 
@@ -171,7 +179,7 @@ is set up, run `register_wireguard.sh` to update the peer (see below).
 
 ```ini
 [Interface]
-Address = 10.0.0.1/24
+Address = 10.0.0.10/24    # unique per dev PC, assigned by devpc_setup.sh
 PrivateKey = <devpc_private_key>
 ListenPort = 51820
 
@@ -190,7 +198,8 @@ AllowedIPs = 10.0.0.3/32
 PersistentKeepalive = 25
 ```
 
-Robot public keys are also stored in `robots_wg.conf` for reference.
+Robot public keys are stored in `robots_wg.conf`. Each dev PC is registered as a
+separate peer on the robot with its own `/32` AllowedIPs entry.
 
 ### Computer B — setup.sh
 
@@ -233,7 +242,13 @@ robot per run. Switch to the other robot's network and run:
 bash ~/topstar_ros2/register_wireguard.sh
 ```
 
-This replaces the old dev PC peer on that robot with the new public key.
+This adds the dev PC as a new peer with the same IP it was assigned on the first robot.
+
+### Registering a second dev PC
+
+On the new dev PC, run `devpc_setup.sh` as normal. It will auto-assign the next available
+IP (e.g. `10.0.0.11`) and add it as a separate peer — the first dev PC's registration
+is untouched. Run `register_wireguard.sh` on each robot to register with both.
 
 ### Using the setup scripts
 
