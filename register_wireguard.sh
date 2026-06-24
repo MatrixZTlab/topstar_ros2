@@ -80,4 +80,19 @@ else
     echo "Done."
 fi
 
+# Add dev PC IP to Computer A's CycloneDDS peer list so the bridge discovers it proactively
+echo -n "Updating CycloneDDS peer list on robot ... "
+if sshpass -p "$ROBOT_PASS" ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 \
+        "${ROBOT_USER}@${ROBOT_IP}" \
+        "grep -qF 'Address=\"${ASSIGNED_IP}\"' /etc/cyclonedds/config.xml" 2>/dev/null; then
+    echo "already present."
+else
+    sshpass -p "$ROBOT_PASS" ssh "${ROBOT_USER}@${ROBOT_IP}" \
+        "echo '${ROBOT_PASS}' | sudo -kS sed -i \
+         's|</Peers>|        <Peer Address=\"${ASSIGNED_IP}\"/>\n      </Peers>|' \
+         /etc/cyclonedds/config.xml && \
+         echo '${ROBOT_PASS}' | sudo -kS systemctl restart topstar_bridge_v2.service" \
+        && echo "Done (bridge restarted)." || echo "FAILED."
+fi
+
 echo "WireGuard IP for this dev PC: ${ASSIGNED_IP}"

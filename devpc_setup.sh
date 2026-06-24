@@ -217,6 +217,21 @@ if ping -c 1 -W 2 192.168.37.10 &>/dev/null; then
          allowed-ips ${DEV_WG_IP}/32 persistent-keepalive 25 && \
          echo '123456' | sudo -kS wg-quick save wg0" && \
         echo "OK (${DEV_WG_IP})" || echo "FAILED"
+
+    # Add dev PC IP to Computer A's CycloneDDS peer list
+    echo -n "Updating CycloneDDS peer list on robot ... "
+    if sshpass -p '123456' ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 \
+            test@192.168.37.10 \
+            "grep -qF 'Address=\"${DEV_WG_IP}\"' /etc/cyclonedds/config.xml" 2>/dev/null; then
+        echo "already present."
+    else
+        sshpass -p '123456' ssh test@192.168.37.10 \
+            "echo '123456' | sudo -kS sed -i \
+             's|</Peers>|        <Peer Address=\"${DEV_WG_IP}\"/>\n      </Peers>|' \
+             /etc/cyclonedds/config.xml && \
+             echo '123456' | sudo -kS systemctl restart topstar_bridge_v2.service" \
+            && echo "Done (bridge restarted)." || echo "FAILED."
+    fi
 else
     echo "robot not reachable."
     echo "  Connect to each robot's network and run: bash $REPO/register_wireguard.sh"
