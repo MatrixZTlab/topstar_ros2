@@ -12,4 +12,4 @@ export ROS_DOMAIN_ID=2
 # IMPORTANT: keep CYCLONEDDS_URI on one line — CycloneDDS fails to parse multiline env vars.
 export CYCLONEDDS_URI='<CycloneDDS><Domain><General><Interfaces><NetworkInterface name="wg0" priority="default" multicast="default"/></Interfaces><MaxMessageSize>1386B</MaxMessageSize></General><Discovery><Peers><Peer Address="10.0.0.3"/></Peers></Discovery></Domain></CycloneDDS>'
 # Stop any stale ros2 daemon (graceful stop cleans socket files; pkill leaves them and causes !rclpy.ok() errors)
-ros2 daemon stop 2>/dev/null || true
+timeout 5 ros2 daemon stop 2>/dev/null || true

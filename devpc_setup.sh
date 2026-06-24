@@ -92,7 +92,7 @@ export ROS_DOMAIN_ID=$domain
 # IMPORTANT: keep CYCLONEDDS_URI on one line — CycloneDDS fails to parse multiline env vars.
 export CYCLONEDDS_URI='$uri'
 # Stop any stale ros2 daemon (graceful stop cleans socket files; pkill leaves them and causes !rclpy.ok() errors)
-ros2 daemon stop 2>/dev/null || true
+timeout 5 ros2 daemon stop 2>/dev/null || true
 SCRIPT
     chmod +x "$file"
     echo "  Written: $file"
@@ -242,7 +242,7 @@ export ROS_DOMAIN_ID=$domain
 # IMPORTANT: keep CYCLONEDDS_URI on one line — CycloneDDS fails to parse multiline env vars.
 export CYCLONEDDS_URI='<CycloneDDS><Domain><General><Interfaces><NetworkInterface name="wg0" priority="default" multicast="default"/></Interfaces><MaxMessageSize>1386B</MaxMessageSize></General><Discovery><Peers><Peer Address="$robot_wg_ip"/></Peers></Discovery></Domain></CycloneDDS>'
 # Stop any stale ros2 daemon (graceful stop cleans socket files; pkill leaves them and causes !rclpy.ok() errors)
-ros2 daemon stop 2>/dev/null || true
+timeout 5 ros2 daemon stop 2>/dev/null || true
 SCRIPT
     chmod +x "$file"
     echo "  Written: $file"

@@ -11,4 +11,4 @@ export ROS_DOMAIN_ID=1
 # WiFi path: reach A via wlp4s0 (192.168.1.11) on the same WiFi subnet — no cross-subnet routing needed.
 export CYCLONEDDS_URI='<CycloneDDS><Domain><General><Interfaces><NetworkInterface name="wlp132s0f0" priority="default" multicast="default"/></Interfaces><MaxMessageSize>1438B</MaxMessageSize></General><Discovery><Peers><Peer Address="192.168.1.11"/></Peers></Discovery></Domain></CycloneDDS>'
 # Stop any stale ros2 daemon (graceful stop cleans socket files; pkill leaves them and causes !rclpy.ok() errors)
-ros2 daemon stop 2>/dev/null || true
+timeout 5 ros2 daemon stop 2>/dev/null || true
