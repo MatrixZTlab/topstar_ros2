@@ -39,7 +39,9 @@ topstar_ros2/
 │   ├── run_motor_plot.sh   # Launch H2 motor visualizer with env setup
 │   ├── test_jog_commands.sh
 │   └── test_steering_stability.sh
-├── setup.sh                # Robot on Ethernet (eno1)
+├── setup_wired.sh          # Robot 2 — wired Ethernet (192.168.37.x)
+├── setup_wired_r1.sh       # Robot 1 — wired Ethernet (192.168.37.x)
+├── setup.sh                # WiFi access (machine-specific)
 ├── setup_local.sh          # Local loopback (lo) for simulation
 ├── setup_default.sh        # ROS2 + CycloneDDS, no interface override
 └── zip_redeploy.sh         # Create clean archive for redeployment
@@ -92,7 +94,7 @@ No additional system packages beyond the common requirements.
 Build the shared message packages first (required before building either robot):
 
 ```bash
-source ~/topstar_ros2/setup.sh
+source ~/topstar_ros2/setup_wired.sh   # or any other setup script
 cd ~/topstar_ros2/cyclonedds_ws
 colcon build
 ```
@@ -101,28 +103,27 @@ colcon build
 
 ## Environment Setup
 
-Three setup helpers are provided:
+Setup helpers are provided for each connection mode:
 
 | Script | DDS Interface | Use case |
 |---|---|---|
-| `setup.sh` | `eno1` (Ethernet) | Real robot over physical network |
+| `setup_wired.sh` | wired Ethernet (configurable) | Robot 2 — direct wire via switch |
+| `setup_wired_r1.sh` | wired Ethernet (configurable) | Robot 1 — direct wire via switch |
+| `setup.sh` | WiFi (machine-specific) | WiFi access (rarely used) |
 | `setup_local.sh` | `lo` (loopback) | Local simulation, no robot |
 | `setup_default.sh` | _(none set)_ | General — let CycloneDDS auto-detect |
 
 Recommended usage:
 
-- Connect to robot: `source ~/topstar_ros2/setup.sh`
+- Connect to Robot 2: `source ~/topstar_ros2/setup_wired.sh`
+- Connect to Robot 1: `source ~/topstar_ros2/setup_wired_r1.sh`
 - Test local simulation: `source ~/topstar_ros2/setup_local.sh`
-- Once packages are built, sourcing either script above is sufficient.
+- Once packages are built, sourcing any setup script above is sufficient.
   No extra `source /opt/ros/...` or `source .../install/setup.bash` is needed.
 
-Before using `setup.sh`, confirm the interface name matches your machine
-(default: `eno1`).
-
-Typical robot network settings:
-
-- Host IPv4: `192.168.1.10`
-- Netmask: `255.255.255.0`
+`setup_wired.sh` and `setup_wired_r1.sh` hardcode the wired interface as
+`enp131s0`. Edit that name to match your machine (`ip link show`) and set a
+static IP in `192.168.37.x/24` before use (see [Robot Network Setup](#robot-network-setup)).
 
 ---
 
@@ -130,96 +131,54 @@ Typical robot network settings:
 
 > Full reference: [`docs/ROBOT_NETWORK_SETUP.md`](docs/ROBOT_NETWORK_SETUP.md)
 
-The robot runs two onboard computers connected by a dedicated wired subnet. A development
-workstation connects to the robot via a second subnet on Computer B.
+An Ethernet switch inside the robot chassis connects Computer A to developer
+workstations through a chassis RJ45 port. The switch is always powered with the
+robot, so Computer A's `eno1` always has a carrier — the DDS bridge starts
+reliably at boot regardless of which dev PCs are connected.
 
 ```
-Dev PC(s)                   Computer B                 Computer A
-192.168.36.x  ── subnet36 ──  192.168.36.10            192.168.37.10
-                               192.168.37.11  ── subnet37 ──
-                               (also on WiFi 192.168.110.x)
+[Ethernet Switch — powered with robot]
+  ├── Computer A eno1  (192.168.37.10)
+  ├── Computer B eno1  (192.168.37.11, future)
+  └── Chassis RJ45     → Dev PC(s) (192.168.37.20+)
 ```
 
-| Machine | Role | Subnet 36 IP | Subnet 37 IP | WiFi IP |
-|---|---|---|---|---|
-| Computer A | Motion control, ROS2 bridge | — | 192.168.37.10 (eno1) | 192.168.1.12 (wlp4s0) |
-| Computer B | User dev (Jetson, camera, etc.) | 192.168.36.10 (lan2) | 192.168.37.11 (lan1) | — |
-| Dev PC | Development / monitoring | 192.168.36.x | — | 192.168.1.x |
+| Machine | Role | Wired IP | WiFi IP |
+|---|---|---|---|
+| Computer A (Robot 1) | Motion control, ROS2 bridge | 192.168.37.10 (eno1) | 192.168.1.11 (wlp4s0) |
+| Computer A (Robot 2) | Motion control, ROS2 bridge | 192.168.37.10 (eno1) | 192.168.1.12 (wlp4s0) |
+| Dev PC | Development / monitoring | 192.168.37.x (static) | — |
 
-Computer B acts as an IP-forwarding router between the two subnets. All machines use
-`ROS_DOMAIN_ID=2` and a shared CycloneDDS unicast peer config so DDS discovery works
-across subnets. The second robot on the same WiFi uses `ROS_DOMAIN_ID=1`.
+Both robots share the same wired IP and are used one at a time. `ROS_DOMAIN_ID`
+separates them (Robot 1 = `1`, Robot 2 = `2`).
 
 ### Setting Up a New Dev PC
 
-**1. Add a static route to subnet 37 via B:**
+**1. Set a static IP on your wired interface:**
 
 ```bash
-sudo ip route add 192.168.37.0/24 via 192.168.36.10
+# Replace "Wired connection 1" with your connection name (nmcli connection show --active)
+sudo nmcli connection modify "Wired connection 1" \
+  ipv4.method manual \
+  ipv4.addresses 192.168.37.40/24
+sudo nmcli connection up "Wired connection 1"
+ping 192.168.37.10   # should reach Computer A
 ```
 
-**Persist it** (find your subnet-36 connection name with `nmcli connection show --active`):
+**2. Edit the wired interface name in the setup scripts:**
+
+Open `setup_wired.sh` (and `setup_wired_r1.sh`) and replace `enp131s0` with your
+wired interface name (`ip link show` to find it).
+
+**3. Source the appropriate script each session:**
 
 ```bash
-sudo nmcli connection modify "<connection-name>" +ipv4.routes "192.168.37.0/24 192.168.36.10"
-sudo nmcli connection up "<connection-name>"
+source ~/topstar_ros2/setup_wired.sh     # Robot 2
+source ~/topstar_ros2/setup_wired_r1.sh  # Robot 1
 ```
 
-**2. Create `~/cyclone_peers.xml`** — add your machine's subnet-36 IP to the list:
-
-```xml
-<CycloneDDS>
-  <Domain>
-    <Internal>
-      <MaxMessageSize>1438B</MaxMessageSize>
-    </Internal>
-    <Discovery>
-      <Peers>
-        <Peer Address="192.168.37.10"/>   <!-- Computer A -->
-        <Peer Address="192.168.37.11"/>   <!-- Computer B (subnet-37) -->
-        <Peer Address="192.168.36.10"/>   <!-- Computer B (subnet-36) -->
-        <Peer Address="192.168.36.40"/>   <!-- existing dev PC -->
-        <Peer Address="192.168.36.XX"/>   <!-- this new machine -->
-      </Peers>
-    </Discovery>
-  </Domain>
-</CycloneDDS>
-```
-
-**3. Add to `~/.bashrc`:**
-
-```bash
-cat >> ~/.bashrc << 'EOF'
-source /opt/ros/humble/setup.bash
-export CYCLONEDDS_URI=file:///home/$USER/cyclone_peers.xml
-export ROS_DOMAIN_ID=2
-EOF
-source ~/.bashrc
-```
-
-**4. Update peer lists on A and B** — add your IP to `/etc/cyclonedds/config.xml` on A
-(sudo required, then `sudo systemctl restart topstar_bridge_v2.service`) and to
-`~/cyclone_peers.xml` on B.
-
-### Troubleshooting
-
-**"sequence size exceeds remaining buffer" on B** — MTU mismatch. B's `lan1` has MTU
-1466; ensure `<MaxMessageSize>1438B</MaxMessageSize>` is in both B's `~/cyclone_peers.xml`
-and A's `/etc/cyclonedds/config.xml`, then restart the bridge on A.
-
-**Robot topics not visible after reboot:**
-1. `ping 192.168.37.10` — if it fails, check `cat /proc/sys/net/ipv4/ip_forward` on B
-   and `ip route show` on A (route to 192.168.36.0/24 must be present).
-2. Confirm `CYCLONEDDS_URI` and `ROS_DOMAIN_ID=2` are set (`printenv | grep ROS`).
-   Note: `~/.bashrc` is not sourced in non-interactive SSH sessions.
-3. `sudo systemctl status topstar_bridge_v2.service` on A — confirm active and that
-   `ExecStart` has no `--network_interface` flag (if present, it overrides the config
-   file and restricts DDS to one interface):
-
-```bash
-sudo sed -i 's/ --network_interface=[^ ]*//' /etc/systemd/system/topstar_bridge_v2.service
-sudo systemctl daemon-reload && sudo systemctl restart topstar_bridge_v2.service
-```
+See [`docs/ROBOT_NETWORK_SETUP.md`](docs/ROBOT_NETWORK_SETUP.md) for Computer A
+configuration, scp/ssh update procedures, and troubleshooting.
 
 ---
 
@@ -230,7 +189,7 @@ sudo systemctl daemon-reload && sudo systemctl restart topstar_bridge_v2.service
 H1 lives in the `topstar_ros2_example` package (`example/src`).
 
 ```bash
-source ~/topstar_ros2/setup_local.sh   # or setup.sh for real robot
+source ~/topstar_ros2/setup_local.sh   # or setup_wired.sh for real robot
 cd ~/topstar_ros2/example
 bash build_h1.sh                       # equivalent to colcon build --packages-select topstar_ros2_example --symlink-install
 ```
@@ -476,7 +435,7 @@ H2 C++ examples live in the `topstar_ros2_h2_example` package (`example/src/src/
 `mujoco_ros2_bridge` lives in the `topstar_ros2_example` package (`example/src/`).
 
 ```bash
-source ~/topstar_ros2/setup.sh
+source ~/topstar_ros2/setup_wired.sh   # or any other setup script
 cd ~/topstar_ros2/example
 colcon build --packages-select topstar_ros2_h2_example  # H2 examples only
 # or
@@ -501,7 +460,7 @@ Run an example:
 
 ```bash
 cd ~/topstar_ros2/example
-source ~/topstar_ros2/setup.sh
+source ~/topstar_ros2/setup_wired.sh
 ros2 run topstar_ros2_h2_example h2_joint_oscillation_example
 ```
 
@@ -518,7 +477,7 @@ bash ~/topstar_ros2/example/run_motor_plot.sh --joints left_leg --mode torque
 bash ~/topstar_ros2/example/run_motor_plot.sh --joints legs --cols 4 --window 15
 ```
 
-The script sources the Ethernet environment (`eno1`) automatically.
+The script sources the wired environment automatically; edit the interface name inside if needed.
 
 ### H2 DDS Topics
 
